@@ -10,6 +10,7 @@ from .utils import (
 from .exceptions import ApiException, EncryptionException
 from .key_client import KeyClient
 
+
 class BaseClient:
     """
     Base HTTP client for EFRIS API.
@@ -19,47 +20,47 @@ class BaseClient:
     # Interface code mapping (URA v1.5, page 7-10)
     INTERFACES = {
         # System Setup & Encryption
-        "test_interface": "T101",           # Test connection (time sync)
-        "get_symmetric_key": "T104",        # Get AES key (mandatory)
-        "system_dictionary": "T115",        # System dictionary update
+        "test_interface": "T101",
+        "get_symmetric_key": "T104",
+        "system_dictionary": "T115",
         
         # Registration
-        "query_taxpayer": "T119",           # Query Taxpayer by TIN
-        "get_branches": "T138",             # Get all branches
+        "query_taxpayer": "T119",
+        "get_branches": "T138",
         
         # Stock Management
-        "query_commodity_category": "T124", # Query commodity category
-        "query_excise_duty": "T125",        # Query excise duty codes
-        "get_exchange_rates": "T126",       # Get exchange rates
-        "goods_upload": "T130",             # Goods upload (mandatory)
-        "goods_inquiry": "T127",            # Goods/services inquiry
-        "query_stock": "T128",              # Query stock quantity
-        "stock_maintain": "T131",           # Stock maintain (in/out)
-        "stock_transfer": "T139",           # Stock transfer between branches
+        "query_commodity_category": "T124",
+        "query_excise_duty": "T125",
+        "get_exchange_rates": "T126",
+        "goods_upload": "T130",
+        "goods_inquiry": "T127",
+        "query_stock": "T128",
+        "stock_maintain": "T131",
+        "stock_transfer": "T139",
         
         # Invoice Management ⭐ Most Critical
-        "billing_upload": "T109",           # Billing upload (fiscalise)
-        "batch_invoice_upload": "T129",     # Batch invoice upload
-        "invoice_details": "T108",          # Invoice details (verify by FDN)
-        "invoice_query": "T107",            # Invoice/receipt query
-        "check_taxpayer_type": "T137",      # Check taxpayer type (VAT exemption)
+        "billing_upload": "T109",
+        "batch_invoice_upload": "T129",
+        "invoice_details": "T108",
+        "invoice_query": "T107",
+        "check_taxpayer_type": "T137",
         
         # Credit/Debit Notes (B2B/B2G only)
-        "credit_application": "T110",       # Credit application (requires approval)
-        "credit_note_status": "T111",       # Credit note status query
-        "credit_note_cancel": "T114",       # Cancel approved credit note
-        "query_credit_application": "T118", # Query credit application details
-        "credit_application_detail": "T113",# Credit application detail
+        "credit_application": "T110",
+        "credit_note_status": "T111",
+        "credit_note_cancel": "T114",
+        "query_credit_application": "T118",
+        "credit_application_detail": "T113",
         
         # Item Query
-        "query_goods_by_code": "T144",      # Query goods by code
+        "query_goods_by_code": "T144",
     }
     
     def __init__(self, config: Dict[str, Any], key_client: "KeyClient"):
         self.config = config
         self.key_client = key_client
         self.timeout = config.get("http", {}).get("timeout", 30)
-        
+    
     def _get_endpoint_url(self) -> str:
         env = self.config.get("env", "sbx")
         return (
@@ -76,11 +77,6 @@ class BaseClient:
     ) -> Dict[str, Any]:
         """
         Send encrypted request to EFRIS API per URA v1.5.
-        
-        Args:
-            interface_key: Key from INTERFACES dict (e.g., "billing_upload")
-            payload: Business payload (will be encrypted+signed if encrypt=True)
-            encrypt: Whether to encrypt+sign (default True; False for T101/T104)
         """
         if interface_key not in self.INTERFACES:
             raise ApiException(
@@ -114,7 +110,7 @@ class BaseClient:
                 brn=self.config.get("brn", "")
             )
         
-        # Send HTTP POST (no headers per URA v1.5, page 4)
+        # Send HTTP POST
         url = self._get_endpoint_url()
         response = requests.post(
             url,

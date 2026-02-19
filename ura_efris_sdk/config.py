@@ -15,7 +15,7 @@ def load_config_from_env(
     - {prefix}_DEVICE_NO: URA-assigned device number (required)
     - {prefix}_BRN: Business Registration Number (optional)
     - {prefix}_PFX_PATH: Path to .pfx certificate file (required)
-    - {prefix}_PFX_PASSWORD: Password for .pfx file (required)
+    - {prefix}_PFX_PASSWORD: Password for .pfx file (required) - RAW, no decryption
     - {prefix}_HTTP_TIMEOUT: Request timeout in seconds (default: 30)
     """
     def get_env(key: str, default: Any = None, required: bool = False) -> Any:
@@ -31,7 +31,7 @@ def load_config_from_env(
         "device_no": get_env("DEVICE_NO", required=True),
         "brn": get_env("BRN", ""),
         "pfx_path": get_env("PFX_PATH", required=True),
-        "pfx_password": get_env("PFX_PASSWORD", required=True),
+        "pfx_password": get_env("PFX_PASSWORD", required=True),  # RAW from env
         "user": get_env("USER", "admin"),
         "longitude": get_env("LONGITUDE", "32.5825"),
         "latitude": get_env("LATITUDE", "0.3476"),

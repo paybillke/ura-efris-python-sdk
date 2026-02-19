@@ -1,4 +1,5 @@
 import os
+from decimal import Decimal
 from ura_efris_sdk import (
     Client,
     KeyClient,
@@ -11,7 +12,6 @@ config = load_config_from_env(prefix="EFRIS")
 validate_config(config)
 
 password = config["pfx_password"]
-
 if isinstance(password, bytes):
     password = password.decode()
 
@@ -21,6 +21,7 @@ key_client = KeyClient(
     password=password,
     tin=config["tin"],
     device_no=config["device_no"],
+    brn=config.get("brn", ""),
     sandbox=config["env"] == "sbx"
 )
 
@@ -31,33 +32,9 @@ print("Testing connection...")
 response = client.test_interface()
 print(f"Server time: {response}")
 
-# Fiscalise invoice (T109)
-print("Fiscalising invoice...")
-invoice_payload = {
-    "invoiceType": "0",
-    "invoiceNo": "INV-2024-001",
-    "invoiceDate": "20240219",
-    "buyerType": "1",
-    "sellerTin": config["tin"],
-    "sellerBranchNo": "01",
-    "currency": "UGX",
-    "goodsDetails": [{
-        "goodsCode": "SUGAR-001",
-        "goodsName": "White Sugar 1kg",
-        "unit": "KG",
-        "qty": 2,
-        "unitPrice": 3500,
-        "amount": 7000,
-        "taxRate": 18,
-        "taxAmount": 1067.80,
-        "discountFlag": "0"
-    }],
-    "totalAmount": 7000,
-    "totalTaxAmount": 1067.80,
-    "operatorName": "admin"
-}
+# DEBUG: Force AES key fetch
+print("\n[DEBUG] Fetching AES key...")
+aes_key = key_client.fetch_aes_key(force=True)
+print(f"[DEBUG] ✅ AES key: {len(aes_key)} bytes")
+print(f"[DEBUG] AES key (hex): {aes_key.hex()}")
 
-response = client.fiscalise_invoice(invoice_payload)
-content = response.get("data", {}).get("content", {})
-print(f"FDN: {content.get('invoiceNo')}")
-print(f"QR Code: {content.get('qrCode')}")

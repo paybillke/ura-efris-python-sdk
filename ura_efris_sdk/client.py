@@ -4,6 +4,7 @@ from .validator import Validator
 from .schemas import SCHEMAS
 from .key_client import KeyClient
 
+
 class Client(BaseClient):
     """
     High-level EFRIS client with business methods.
