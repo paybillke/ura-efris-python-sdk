@@ -1,3 +1,8 @@
+"""
+EFRIS Key Client
+Manages cryptographic keys (PFX, AES) for secure API communication.
+Handles key retrieval, caching, and cryptographic operations.
+"""
 import os
 import time
 import json
@@ -5,27 +10,33 @@ import base64
 import requests
 from datetime import datetime
 from typing import Optional, Any
-
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.hazmat.backends import default_backend
-
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
-
 from .utils import build_unencrypted_request
 from .exceptions import AuthenticationException, ApiException, EncryptionException
 
 
 class KeyClient:
     """
-    Manages RSA private key + AES key lifecycle per URA v1.5 spec.
-    Matches working Frappe implementation logic.
+    Manages cryptographic keys for EFRIS API authentication.
+    
+    Responsibilities:
+        - Load and cache PFX private key
+        - Fetch and cache AES symmetric key from T104 endpoint
+        - Handle key rotation (24-hour TTL)
+        - Perform RSA signing operations
+    
+    Note: This implementation uses local PFX files rather than the
+    T102 Whitebox key provisioning described in the API documentation.
     """
-
+    
+    # EFRIS API endpoints
     T104_ENDPOINT_TEST = "https://efristest.ura.go.ug/efrisws/ws/taapp/getInformation"
     T104_ENDPOINT_PROD = "https://efrisws.ura.go.ug/ws/taapp/getInformation"
-
+    
     def __init__(
         self,
         pfx_path: str,
@@ -36,31 +47,53 @@ class KeyClient:
         sandbox: bool = True,
         timeout: int = 30
     ):
+        """
+        Initialize KeyClient with authentication credentials.
+        
+        Args:
+            pfx_path: Path to PFX certificate file
+            password: PFX file password
+            tin: Taxpayer Identification Number
+            device_no: Device serial number
+            brn: Business Registration Number
+            sandbox: Use sandbox environment
+            timeout: HTTP request timeout in seconds
+        """
         self.pfx_path = pfx_path
-        self.password = password  # plaintext from env
+        self.password = password
         self.tin = tin
         self.device_no = device_no
         self.brn = brn
         self.sandbox = sandbox
         self.timeout = timeout
-
+        
+        # Cached cryptographic objects
         self._private_key: Optional[Any] = None
         self._aes_key: Optional[bytes] = None
         self._aes_key_fetched_at: Optional[float] = None
-        self._aes_key_ttl_seconds = 24 * 60 * 60  # 24h
-
+        self._aes_key_ttl_seconds = 24 * 60 * 60  # 24 hours
+    
     def _get_endpoint(self) -> str:
+        """Get the appropriate API endpoint based on environment."""
         return self.T104_ENDPOINT_TEST if self.sandbox else self.T104_ENDPOINT_PROD
-
+    
     def _load_private_key(self) -> Any:
-        """Load RSA private key from .pfx (cached)"""
+        """
+        Load and cache the RSA private key from PFX file.
+        
+        Returns:
+            Private key object
+        
+        Raises:
+            AuthenticationException: If PFX file is invalid or password is wrong
+        """
         if self._private_key is None:
             if not os.path.exists(self.pfx_path):
                 raise AuthenticationException(f"PFX file not found: {self.pfx_path}")
-
+            
             with open(self.pfx_path, "rb") as f:
                 pfx_data = f.read()
-
+            
             try:
                 private_key, _, _ = pkcs12.load_key_and_certificates(
                     pfx_data,
@@ -69,26 +102,44 @@ class KeyClient:
                 )
             except Exception as e:
                 raise AuthenticationException(f"Failed to load PFX: {e}")
-
+            
             if private_key is None:
                 raise AuthenticationException("Private key extraction failed")
-
+            
             self._private_key = private_key
-
+        
         return self._private_key
-
+    
     def fetch_aes_key(self, force: bool = False) -> bytes:
         """
-        Fetch AES key via T104 interface (URA v1.5).
+        Fetch AES symmetric key from T104 endpoint.
+        Key is cached for 24 hours to reduce API calls.
+        
+        Process:
+            1. Check if cached key is still valid
+            2. Call T104 endpoint to get encrypted AES key
+            3. Decrypt AES key using RSA private key
+            4. Cache the decrypted key
+        
+        Args:
+            force: Force refresh even if cached key is valid
+        
+        Returns:
+            bytes: AES symmetric key
+        
+        Raises:
+            ApiException: If T104 request fails
+            EncryptionException: If key decryption fails
         """
-
-        # Return cached AES key if still valid
+        # Return cached key if still valid
         if not force and self._aes_key and self._aes_key_fetched_at:
             if time.time() - self._aes_key_fetched_at < self._aes_key_ttl_seconds:
                 return self._aes_key
-
+        
+        # Load RSA private key for decryption
         private_key = self._load_private_key()
-
+        
+        # Build T104 request (unencrypted)
         payload = build_unencrypted_request(
             content={},
             interface_code="T104",
@@ -96,9 +147,9 @@ class KeyClient:
             device_no=self.device_no,
             brn=self.brn
         )
-
+        
+        # Call T104 endpoint
         url = self._get_endpoint()
-
         try:
             response = requests.post(
                 url,
@@ -108,91 +159,104 @@ class KeyClient:
             )
         except requests.RequestException as e:
             raise ApiException(f"T104 connection error: {e}")
-
+        
         if response.status_code != 200:
             raise ApiException(
                 f"T104 HTTP {response.status_code}: {response.text}",
                 status_code=response.status_code
             )
-
+        
         resp_json = response.json()
-
         return_state = resp_json.get("returnStateInfo", {})
+        
+        # Check for T104 errors
         if return_state.get("returnMessage") != "SUCCESS":
             raise ApiException(
                 f"T104 failed: {return_state.get('returnMessage')}",
                 error_code=return_state.get("returnCode")
             )
-
+        
+        # Extract and decrypt AES key
         try:
             content_b64 = resp_json["data"]["content"]
             content_json = json.loads(base64.b64decode(content_b64).decode())
-
+            
+            # Handle API typo: "passowrdDes" instead of "passwordDes"
             encrypted_aes_b64 = (
-                content_json.get("passowrdDes")  # URA typo
-                or content_json.get("passwordDes")
+                content_json.get("passowrdDes") or
+                content_json.get("passwordDes")
             )
-
+            
             if not encrypted_aes_b64:
                 raise EncryptionException("Missing AES key field in T104 response")
-
+            
             encrypted_aes = base64.b64decode(encrypted_aes_b64)
-
-            print("Encrypted AES length:", len(encrypted_aes))
-
-            # Convert private key → PEM → RSA key
+            
+            # Convert private key to PEM format for PyCryptodome
             pkey_str = private_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PrivateFormat.PKCS8,
                 encryption_algorithm=serialization.NoEncryption()
             )
-
+            
+            # Decrypt AES key using RSA
             cipher = PKCS1_v1_5.new(RSA.import_key(pkey_str))
-
-            # SAFE decrypt with sentinel
             aes_key_encrypted = cipher.decrypt(encrypted_aes, b"")
-
+            
             if not aes_key_encrypted:
                 raise EncryptionException(
-                    "RSA decrypt failed — wrong certificate/password/device"
+                    "RSA decrypt failed - wrong certificate/password/device"
                 )
-
+            
+            # AES key is base64-encoded in the RSA payload
             try:
                 aes_key = base64.b64decode(aes_key_encrypted)
             except Exception:
                 raise EncryptionException("Failed to base64-decode AES key")
-
+            
+            # Validate AES key length
             if len(aes_key) not in (16, 24, 32):
                 raise EncryptionException(
                     f"Invalid AES key length: {len(aes_key)} bytes"
                 )
-
+            
+            # Cache the key
             self._aes_key = aes_key
             self._aes_key_fetched_at = time.time()
-
-            print("AES key length:", len(aes_key))
-
+            
             return aes_key
-
+        
         except Exception as e:
             raise AuthenticationException(f"Failed to extract AES key: {e}")
-
+    
     def sign_payload(self, data: bytes) -> str:
-        """Sign payload with RSA-SHA1"""
+        """
+        Sign payload data using RSA-SHA1.
+        
+        Args:
+            data: Data bytes to sign
+        
+        Returns:
+            str: Base64-encoded signature
+        """
         private_key = self._load_private_key()
         from .utils import sign_rsa_sha1
         return sign_rsa_sha1(data, private_key)
-
+    
     def forget_aes_key(self):
-        """Clear cached AES key"""
+        """Clear cached AES key (forces refresh on next use)."""
         self._aes_key = None
         self._aes_key_fetched_at = None
-
+    
     @property
     def aes_key_valid_until(self) -> Optional[str]:
-        """Return AES expiry time"""
+        """
+        Get the expiry timestamp of the cached AES key.
+        
+        Returns:
+            str: Expiry timestamp or None if no key cached
+        """
         if not self._aes_key_fetched_at:
             return None
-
         expiry = self._aes_key_fetched_at + self._aes_key_ttl_seconds
         return datetime.fromtimestamp(expiry).strftime("%Y-%m-%d %H:%M:%S")

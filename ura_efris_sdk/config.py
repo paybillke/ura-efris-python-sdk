@@ -1,3 +1,7 @@
+"""
+EFRIS Configuration Management
+Handles loading and validating configuration from environment variables.
+"""
 import os
 from typing import Dict, Any, Optional
 
@@ -7,18 +11,36 @@ def load_config_from_env(
     sandbox_default: bool = True
 ) -> Dict[str, Any]:
     """
-    Load EFRIS config from environment variables.
+    Load EFRIS configuration from environment variables.
     
-    Expected env vars:
-    - {prefix}_ENV: "sbx" or "prod" (default: "sbx")
-    - {prefix}_TIN: Taxpayer TIN (required)
-    - {prefix}_DEVICE_NO: URA-assigned device number (required)
-    - {prefix}_BRN: Business Registration Number (optional)
-    - {prefix}_PFX_PATH: Path to .pfx certificate file (required)
-    - {prefix}_PFX_PASSWORD: Password for .pfx file (required) - RAW, no decryption
-    - {prefix}_HTTP_TIMEOUT: Request timeout in seconds (default: 30)
+    Environment Variables:
+        EFRIS_ENV: Environment (sbx/prod)
+        EFRIS_TIN: Taxpayer Identification Number (required)
+        EFRIS_DEVICE_NO: Device serial number (required)
+        EFRIS_BRN: Business Registration Number
+        EFRIS_PFX_PATH: Path to PFX certificate file (required)
+        EFRIS_PFX_PASSWORD: PFX file password (required)
+        EFRIS_USER: Username (default: admin)
+        EFRIS_LONGITUDE: GPS longitude (default: 32.5825)
+        EFRIS_LATITUDE: GPS latitude (default: 0.3476)
+        EFRIS_HTTP_TIMEOUT: HTTP request timeout in seconds (default: 30)
+    
+    Args:
+        prefix: Environment variable prefix
+        sandbox_default: Use sandbox environment by default
+    
+    Returns:
+        dict: Configuration dictionary
+    
+    Raises:
+        ValueError: If required environment variables are missing
     """
-    def get_env(key: str, default: Any = None, required: bool = False) -> Any:
+    def get_env(
+        key: str,
+        default: Any = None,
+        required: bool = False
+    ) -> Any:
+        """Helper to get environment variable with validation."""
         env_key = f"{prefix}_{key}"
         value = os.getenv(env_key, default)
         if required and not value:
@@ -31,7 +53,7 @@ def load_config_from_env(
         "device_no": get_env("DEVICE_NO", required=True),
         "brn": get_env("BRN", ""),
         "pfx_path": get_env("PFX_PATH", required=True),
-        "pfx_password": get_env("PFX_PASSWORD", required=True),  # RAW from env
+        "pfx_password": get_env("PFX_PASSWORD", required=True),
         "user": get_env("USER", "admin"),
         "longitude": get_env("LONGITUDE", "32.5825"),
         "latitude": get_env("LATITUDE", "0.3476"),
@@ -42,7 +64,20 @@ def load_config_from_env(
 
 
 def validate_config(config: Dict[str, Any]) -> None:
-    """Validate config has required fields"""
+    """
+    Validate configuration dictionary.
+    
+    Checks:
+        - Required fields are present
+        - Environment is valid (sbx/prod)
+        - PFX file exists at specified path
+    
+    Args:
+        config: Configuration dictionary
+    
+    Raises:
+        ValueError: If validation fails
+    """
     required = ["env", "tin", "device_no", "pfx_path", "pfx_password"]
     missing = [k for k in required if not config.get(k)]
     if missing:

@@ -1,47 +1,82 @@
+"""
+EFRIS Utility Functions
+Handles encryption, decryption, signing, and timestamp operations.
+All cryptographic operations follow URA EFRIS API specifications.
+"""
 import base64
 import json
 from datetime import datetime
 from typing import Union, Optional, Any, Dict
-
 from Crypto.Cipher import AES
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import pkcs12
-
 import pytz
 import uuid
-
 from .exceptions import EncryptionException, AuthenticationException
 
 
-# =========================================================
-# TIME UTILS (UTC+3 - East Africa Time per URA spec)
-# =========================================================
+# =============================================================================
+# TIMESTAMP UTILITIES
+# =============================================================================
 
 def get_uganda_timestamp() -> str:
-    """Returns current time in UTC+3 format: YYYY-MM-DD HH:MM:SS"""
+    """
+    Get current timestamp in Uganda timezone (Africa/Kampala).
+    Format: yyyy-MM-dd HH:mm:ss (used for requests)
+    
+    Returns:
+        str: Formatted timestamp string
+    """
     ug_tz = pytz.timezone("Africa/Kampala")
     now = datetime.now(ug_tz)
     return now.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def get_uganda_timestamp_ddmmyyyy() -> str:
-    """Returns current time in DD/MM/YYYY HH:MM:SS format (for receipts)"""
+    """
+    Get current timestamp in Uganda timezone with DD/MM/YYYY format.
+    Format: dd/MM/yyyy HH:mm:ss (used for responses)
+    
+    Returns:
+        str: Formatted timestamp string
+    """
     ug_tz = pytz.timezone("Africa/Kampala")
     now = datetime.now(ug_tz)
     return now.strftime("%d/%m/%Y %H:%M:%S")
 
 
 def get_uganda_date_yyyymmdd() -> str:
-    """Returns current date in YYYYMMDD format"""
+    """
+    Get current date in Uganda timezone.
+    Format: YYYYMMDD
+    
+    Returns:
+        str: Formatted date string
+    """
     ug_tz = pytz.timezone("Africa/Kampala")
     now = datetime.now(ug_tz)
     return now.strftime("%Y%m%d")
 
 
-def validate_time_sync(client_time: str, server_time: str, tolerance_minutes: int = 10) -> bool:
-    """Validate client/server time difference is within tolerance (URA: ±10 min)"""
+def validate_time_sync(
+    client_time: str,
+    server_time: str,
+    tolerance_minutes: int = 10
+) -> bool:
+    """
+    Validate that client and server times are synchronized.
+    EFRIS requires time difference to be within 10 minutes.
+    
+    Args:
+        client_time: Client timestamp (yyyy-MM-dd HH:mm:ss)
+        server_time: Server timestamp (yyyy-MM-dd HH:mm:ss)
+        tolerance_minutes: Maximum allowed difference in minutes
+    
+    Returns:
+        bool: True if times are synchronized within tolerance
+    """
     fmt = "%Y-%m-%d %H:%M:%S"
     try:
         client_dt = datetime.strptime(client_time, fmt)
@@ -52,57 +87,107 @@ def validate_time_sync(client_time: str, server_time: str, tolerance_minutes: in
         return False
 
 
-# =========================================================
-# AES ENCRYPTION (ECB Mode) - MATCHES FRAPPE LOGIC EXACTLY
-# =========================================================
+# =============================================================================
+# AES ENCRYPTION/DECRYPTION (ECB Mode)
+# =============================================================================
 
 def encrypt_aes_ecb(plaintext: str, key: bytes) -> str:
     """
-    Encrypt with AES-ECB, manual PKCS7 padding.
-    Matches Frappe's encryption_utils.encrypt_aes_ecb() exactly.
-    Returns base64 string.
+    Encrypt plaintext using AES-ECB mode with PKCS7 padding.
+    
+    Args:
+        plaintext: String to encrypt
+        key: AES key (must be 16, 24, or 32 bytes)
+    
+    Returns:
+        str: Base64-encoded ciphertext
+    
+    Raises:
+        ValueError: If key length is invalid
     """
     if len(key) not in [16, 24, 32]:
         raise ValueError("AES key must be 16, 24, or 32 bytes")
     
-    # Manual PKCS7 padding - matches Frappe exactly
-    padding_length = 16 - (len(plaintext) % 16)
+    plaintext_bytes = plaintext.encode("utf-8")
+    # Apply PKCS7 padding
+    padding_length = 16 - (len(plaintext_bytes) % 16)
     padding = bytes([padding_length] * padding_length)
-    
-    # Frappe style: concatenate string + decoded padding, then encode
-    padded_data = plaintext + padding.decode("utf-8", errors="ignore")
+    padded_data = plaintext_bytes + padding
     
     cipher = AES.new(key, AES.MODE_ECB)
-    ct_bytes = cipher.encrypt(padded_data.encode("utf-8"))
+    ct_bytes = cipher.encrypt(padded_data)
     return base64.b64encode(ct_bytes).decode("utf-8")
 
 
 def decrypt_aes_ecb(ciphertext_b64: str, key: bytes) -> str:
     """
-    Decrypt base64 AES-ECB ciphertext, manual unpadding.
-    Matches Frappe's encryption_utils.decrypt_aes_ecb() exactly.
-    Returns plaintext string.
+    Decrypt ciphertext using AES-ECB mode with PKCS7 padding validation.
+    
+    Args:
+        ciphertext_b64: Base64-encoded ciphertext
+        key: AES key (must be 16, 24, or 32 bytes)
+    
+    Returns:
+        str: Decrypted plaintext
+    
+    Raises:
+        EncryptionException: If padding validation fails
     """
     if len(key) not in [16, 24, 32]:
         raise ValueError("AES key must be 16, 24, or 32 bytes")
     
     ciphertext = base64.b64decode(ciphertext_b64)
     cipher = AES.new(key, AES.MODE_ECB)
+    padded_plaintext = cipher.decrypt(ciphertext)
     
-    # Decrypt and decode to string (matches Frappe)
-    plaintext_with_padding = cipher.decrypt(ciphertext).decode("utf-8", errors="ignore")
+    # Validate and remove PKCS7 padding
+    padding_length = padded_plaintext[-1]
+    if padding_length > 16 or padding_length == 0:
+        raise EncryptionException("Invalid PKCS7 padding")
+    if not all(b == padding_length for b in padded_plaintext[-padding_length:]):
+        raise EncryptionException("PKCS7 padding verification failed")
     
-    # Manual PKCS7 unpadding - matches Frappe exactly
-    padding_length = ord(plaintext_with_padding[-1])
-    return plaintext_with_padding[:-padding_length]
+    plaintext_bytes = padded_plaintext[:-padding_length]
+    return plaintext_bytes.decode("utf-8", errors="ignore")
 
 
-# =========================================================
-# RSA SIGNING (SHA1withRSA) - MATCHES FRAPPE LOGIC
-# =========================================================
+def _encrypt_aes_ecb_raw(plaintext_bytes: bytes, key: bytes) -> bytes:
+    """
+    Low-level AES-ECB encryption returning raw bytes (for signing).
+    Used internally to encrypt content before creating signature.
+    
+    Args:
+        plaintext_bytes: Raw bytes to encrypt
+        key: AES key
+    
+    Returns:
+        bytes: Encrypted raw bytes (not base64 encoded)
+    """
+    padding_length = 16 - (len(plaintext_bytes) % 16)
+    padding = bytes([padding_length] * padding_length)
+    padded = plaintext_bytes + padding
+    cipher = AES.new(key, AES.MODE_ECB)
+    return cipher.encrypt(padded)
+
+
+# =============================================================================
+# RSA OPERATIONS
+# =============================================================================
 
 def load_private_key_from_pfx(pfx_data: bytes, password: str) -> Any:
-    """Load RSA private key from PKCS#12 (.pfx) file - matches Frappe"""
+    """
+    Extract private key from PFX/PKCS12 file.
+    
+    Args:
+        pfx_data: Raw PFX file content
+        password: PFX password
+    
+    Returns:
+        Private key object
+    
+    Raises:
+        EncryptionException: If key extraction fails
+    """
     try:
         private_key, _, _ = pkcs12.load_key_and_certificates(
             pfx_data,
@@ -118,15 +203,23 @@ def load_private_key_from_pfx(pfx_data: bytes, password: str) -> Any:
 
 def sign_rsa_sha1(data: bytes, private_key: Any) -> str:
     """
-    Sign data with RSA-SHA1 (URA requirement).
-    CRITICAL: Input should be the base64-encoded encrypted content as bytes.
-    Matches Frappe's sign_data() exactly.
+    Sign data using RSA-SHA1 algorithm (required by EFRIS API).
+    
+    Args:
+        data: Data bytes to sign
+        private_key: RSA private key object
+    
+    Returns:
+        str: Base64-encoded signature
+    
+    Raises:
+        EncryptionException: If signing fails
     """
     try:
         signature = private_key.sign(
             data,
-            asym_padding.PKCS1v15(),  # PKCS1v15 (no underscore)
-            hashes.SHA1()  # Must be SHA1 per URA v1.5
+            asym_padding.PKCS1v15(),  # PKCS#1 v1.5 padding
+            hashes.SHA1()  # SHA-1 hash (EFRIS requirement)
         )
         return base64.b64encode(signature).decode("utf-8")
     except Exception as e:
@@ -134,7 +227,19 @@ def sign_rsa_sha1(data: bytes, private_key: Any) -> str:
 
 
 def decrypt_rsa_pkcs1(encrypted_data: bytes, private_key: Any) -> bytes:
-    """Decrypt RSA-PKCS#1 v1.5 encrypted data (for T104 AES key)"""
+    """
+    Decrypt data using RSA-PKCS1 v1.5 padding.
+    
+    Args:
+        encrypted_data: Encrypted bytes
+        private_key: RSA private key object
+    
+    Returns:
+        bytes: Decrypted data
+    
+    Raises:
+        EncryptionException: If decryption fails
+    """
     try:
         return private_key.decrypt(
             encrypted_data,
@@ -144,9 +249,9 @@ def decrypt_rsa_pkcs1(encrypted_data: bytes, private_key: Any) -> bytes:
         raise EncryptionException(f"RSA decryption failed: {e}")
 
 
-# =========================================================
-# REQUEST/RESPONSE ENVELOPE BUILDERS
-# =========================================================
+# =============================================================================
+# REQUEST BUILDING
+# =============================================================================
 
 def build_global_info(
     interface_code: str,
@@ -157,17 +262,32 @@ def build_global_info(
     longitude: str = "32.5825",
     latitude: str = "0.3476"
 ) -> dict:
-    """Build globalInfo section - matches Frappe fetch_data()"""
+    """
+    Build the globalInfo section of EFRIS API requests.
+    Contains metadata required for all API calls.
+    
+    Args:
+        interface_code: API interface code (e.g., "T109")
+        tin: Taxpayer Identification Number
+        device_no: Device serial number
+        brn: Business Registration Number (optional)
+        user: Username for the request
+        longitude: GPS longitude
+        latitude: GPS latitude
+    
+    Returns:
+        dict: Global info dictionary
+    """
     return {
-        "appId": "AP04",
-        "version": "1.1.20191201",
-        "dataExchangeId": uuid.uuid4().hex.upper(),
+        "appId": "AP04",  # System-to-System integration
+        "version": "1.1.20191201",  # API version
+        "dataExchangeId": uuid.uuid4().hex.upper(),  # Unique request ID
         "interfaceCode": interface_code,
-        "requestCode": "TP",
+        "requestCode": "TP",  # Taxpayer side
         "requestTime": get_uganda_timestamp(),
-        "responseCode": "TA",
+        "responseCode": "TA",  # URA side
         "userName": user,
-        "deviceMAC": "FFFFFFFFFFFF",
+        "deviceMAC": "FFFFFFFFFFFF",  # Default MAC for system integration
         "deviceNo": device_no,
         "tin": tin,
         "brn": brn,
@@ -198,26 +318,52 @@ def build_encrypted_request(
     private_key: Any
 ) -> dict:
     """
-    Build encrypted+signed request envelope.
-    CRITICAL: Signature calculation matches Frappe's encrypt_and_prepare_data().
+    Build an encrypted EFRIS API request envelope.
+    
+    Structure:
+    {
+        "data": {
+            "content": "<base64 encrypted JSON>",
+            "signature": "<base64 RSA signature>",
+            "dataDescription": {
+                "codeType": "1",      # Encrypted
+                "encryptCode": "2",   # AES
+                "zipCode": "0"        # No compression
+            }
+        },
+        "globalInfo": {...},
+        "returnStateInfo": {...}
+    }
+    
+    Args:
+        content: Request payload dictionary
+        aes_key: AES encryption key
+        interface_code: API interface code
+        tin: Taxpayer ID
+        device_no: Device number
+        brn: Business Registration Number
+        private_key: RSA private key for signing
+    
+    Returns:
+        dict: Complete request envelope
     """
-    # 1. Serialize + encrypt content
+    # Serialize content to compact JSON
     json_content = json.dumps(content, separators=(',', ':'), ensure_ascii=False)
-    encrypted_content = encrypt_aes_ecb(json_content, aes_key)  # Returns base64 string
     
-    # 2. 🔧 CRITICAL: Sign the base64-encoded encrypted content (as bytes)
-    # Matches Frappe: sign_data(private_key, newEncrypteddata.encode())
-    # where newEncrypteddata = base64.b64encode(isAESEncrypted).decode("utf-8")
-    signature = sign_rsa_sha1(encrypted_content.encode('utf-8'), private_key)
+    # Encrypt content with AES
+    encrypted_bytes = _encrypt_aes_ecb_raw(json_content.encode("utf-8"), aes_key)
+    encrypted_content_b64 = base64.b64encode(encrypted_bytes).decode("utf-8")
     
-    # 3. Build envelope
+    # Sign the encrypted bytes (not the base64)
+    signature = sign_rsa_sha1(encrypted_bytes, private_key)
+    
     return {
         "data": {
-            "content": encrypted_content,  # Base64 string
-            "signature": signature,         # Base64 signature
+            "content": encrypted_content_b64,
+            "signature": signature,
             "dataDescription": {
                 "codeType": "1",    # Encrypted
-                "encryptCode": "2", # AES
+                "encryptCode": "2", # AES encryption
                 "zipCode": "0"      # No compression
             }
         },
@@ -236,10 +382,23 @@ def build_unencrypted_request(
     device_no: str,
     brn: str = ""
 ) -> dict:
-    """Build unencrypted request envelope (for T101, T104)"""
+    """
+    Build an unencrypted EFRIS API request envelope.
+    Used for initialization endpoints (T101, T102, T103, T104).
+    
+    Args:
+        content: Request payload dictionary
+        interface_code: API interface code
+        tin: Taxpayer ID
+        device_no: Device number
+        brn: Business Registration Number
+    
+    Returns:
+        dict: Complete request envelope
+    """
     return {
         "data": {
-            "content": "",
+            "content": "",  # Empty for unencrypted requests
             "signature": "",
             "dataDescription": {
                 "codeType": "0",  # Not encrypted
@@ -256,27 +415,48 @@ def build_unencrypted_request(
 
 
 def unwrap_response(response_json: dict, aes_key: Optional[bytes] = None) -> dict:
-    """Decrypt + validate EFRIS response - matches Frappe logic"""
-    # 1. Check returnStateInfo (URA v1.5, page 27)
+    """
+    Process and decrypt EFRIS API response.
+    Validates return codes and decrypts content if encrypted.
+    
+    Args:
+        response_json: Raw API response dictionary
+        aes_key: AES key for decryption (if response is encrypted)
+    
+    Returns:
+        dict: Processed response with decrypted content
+    
+    Raises:
+        ApiException: If returnCode indicates error
+        EncryptionException: If decryption fails
+    """
     return_state = response_json.get("returnStateInfo", {})
-    if return_state.get("returnMessage") != "SUCCESS":
+    return_code = return_state.get("returnCode", "")
+    return_msg = return_state.get("returnMessage", "")
+    
+    # Check for API-level errors
+    # Note: returnCode "00" = SUCCESS, "99" = Unknown error
+    if return_code == "99" or return_msg != "SUCCESS":
         from .exceptions import ApiException
         raise ApiException(
-            message=return_state.get("returnMessage", "Unknown error"),
-            error_code=return_state.get("returnCode"),
-            status_code=400
+            message=return_msg or "Unknown API error",
+            error_code=return_code or "99",
+            status_code=400,
+            details={"returnStateInfo": return_state}
         )
     
-    # 2. Decrypt content if present and aes_key provided
+    # Decrypt content if encrypted
     data_section = response_json.get("data", {})
     encrypted_content = data_section.get("content")
-    
     if encrypted_content and aes_key:
         try:
-            decrypted = decrypt_aes_ecb(encrypted_content, aes_key)
-            response_json["data"]["content"] = json.loads(decrypted)
+            decrypted_json = decrypt_aes_ecb(encrypted_content, aes_key)
+            response_json["data"]["content"] = json.loads(decrypted_json)
         except Exception as e:
             from .exceptions import EncryptionException
-            raise EncryptionException(f"Response decryption failed: {e}")
+            raise EncryptionException(
+                f"Response decryption failed: {e}",
+                details={"encrypted_content_preview": encrypted_content[:100] + "..."}
+            )
     
     return response_json
