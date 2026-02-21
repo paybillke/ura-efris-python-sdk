@@ -8,6 +8,9 @@ from .base_client import BaseClient
 from .validator import Validator
 from .schemas import SCHEMAS
 from .key_client import KeyClient
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Client(BaseClient):
@@ -63,6 +66,7 @@ class Client(BaseClient):
     def test_interface(self, data: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Test API connectivity (T101 - Get Server Time).
+        Request: Not Encrypted, Response: Not Encrypted
         
         Args:
             data: Optional request data
@@ -70,45 +74,40 @@ class Client(BaseClient):
         Returns:
             dict: Response with currentTime field
         """
-        raw_resp = self._send("test_interface", data or {}, encrypt=False)
-        # Handle potential encrypted response
-        if "data" in raw_resp and "content" in raw_resp["data"]:
-            import base64, json
-            try:
-                content_b64 = raw_resp["data"]["content"]
-                if content_b64:
-                    decoded = base64.b64decode(content_b64).decode('utf-8')
-                    raw_resp["data"]["content"] = json.loads(decoded)
-            except Exception:
-                pass
-        return raw_resp
+        return self._send("test_interface", data or {}, encrypt=False, decrypt=False)
     
     def client_init(self) -> Dict[str, Any]:
         """
         Initialize client (T102 - Client Initialization).
+        Request: Not Encrypted, Response: Not Encrypted
         Note: This implementation uses local PFX, not T102 Whitebox keys.
         
         Returns:
             dict: Initialization response
         """
-        return self._send("client_init", {}, encrypt=False)
+        return self._send("client_init", {}, encrypt=False, decrypt=False)
     
     def sign_in(self) -> Dict[str, Any]:
         """
         Sign in to EFRIS (T103 - Login).
+        Request: Not Encrypted, Response: Encrypted
         Retrieves taxpayer and device information.
         
         Returns:
             dict: Login response with taxpayer/device details
-        
-        Note: API docs say T103 response is encrypted, but this
-        implementation sends encrypt=False. May need adjustment.
         """
-        return self._send("sign_in", {}, encrypt=False)
+        response = self._send("sign_in", {}, encrypt=False, decrypt=True)
+        # Extract taxpayerID from response for use in globalInfo
+        content = response.get("data", {}).get("content", {})
+        taxpayer = content.get("taxpayer", {})
+        if taxpayer and "id" in taxpayer:
+            logger.debug(f"Updated taxpayerID from sign_in: {str(taxpayer['id'])}")
+        return response
     
     def get_symmetric_key(self, force: bool = False) -> Dict[str, Any]:
         """
         Fetch AES symmetric key (T104).
+        Request: Not Encrypted, Response: Not Encrypted
         
         Args:
             force: Force key refresh
@@ -117,11 +116,12 @@ class Client(BaseClient):
             dict: Status message
         """
         self.key_client.fetch_aes_key(force=force)
-        return {"resultCd": "000", "resultMsg": "AES key refreshed"}
+        return self.key_client._aes_key_content_json
     
     def forget_password(self, user_name: str, new_password: str) -> Dict[str, Any]:
         """
         Reset password (T105).
+        Request: Encrypted, Response: Not Encrypted
         
         Args:
             user_name: Username
@@ -131,11 +131,12 @@ class Client(BaseClient):
             dict: API response
         """
         payload = {"userName": user_name, "changedPassword": new_password}
-        return self._send("forget_password", payload, encrypt=True)
+        return self._send("forget_password", payload, encrypt=True, decrypt=False)
     
     def update_system_dictionary(self, data: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Update system dictionary (T115).
+        Request: Not Encrypted, Response: Encrypted
         Retrieves tax rates, currencies, payment methods, etc.
         
         Args:
@@ -144,7 +145,7 @@ class Client(BaseClient):
         Returns:
             dict: Dictionary data
         """
-        return self.post("system_dictionary", data or {}, encrypt=False)
+        return self._send("system_dictionary", data or {}, encrypt=False, decrypt=True)
     
     # =========================================================================
     # INVOICE OPERATIONS
@@ -153,6 +154,7 @@ class Client(BaseClient):
     def fiscalise_invoice(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Upload invoice to EFRIS (T109 - Billing Upload).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             data: Invoice data (validated against T109 schema)
@@ -164,11 +166,12 @@ class Client(BaseClient):
             ValidationException: If invoice data is invalid
         """
         validated = self._validate(data, "billing_upload")
-        return self.post("billing_upload", validated, encrypt=True)
+        return self._send("billing_upload", validated, encrypt=True, decrypt=True)
     
     def fiscalise_batch_invoices(self, invoices: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Upload multiple invoices in batch (T129).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             invoices: List of invoice objects with invoiceContent and invoiceSignature
@@ -183,11 +186,12 @@ class Client(BaseClient):
             }
             for inv in invoices
         ]
-        return self.post("batch_invoice_upload", payload, encrypt=True)
+        return self._send("batch_invoice_upload", payload, encrypt=True, decrypt=True)
     
     def verify_invoice(self, invoice_no: str) -> Dict[str, Any]:
         """
         Get invoice details (T108).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             invoice_no: Invoice number to verify
@@ -196,11 +200,12 @@ class Client(BaseClient):
             dict: Invoice details
         """
         validated = self._validate({"invoiceNo": invoice_no}, "invoice_details")
-        return self.post("invoice_details", validated, encrypt=True)
+        return self._send("invoice_details", validated, encrypt=True, decrypt=True)
     
     def query_invoices(self, filters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Query normal invoices (T107).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             filters: Query filters (date range, buyer info, etc.)
@@ -209,11 +214,12 @@ class Client(BaseClient):
             dict: Paginated invoice list
         """
         validated = self._validate(filters, "invoice_query_normal")
-        return self.post("invoice_query", validated, encrypt=True)
+        return self._send("invoice_query", validated, encrypt=True, decrypt=True)
     
     def query_all_invoices(self, filters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Query all invoices including credit/debit notes (T106).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             filters: Query filters
@@ -222,11 +228,12 @@ class Client(BaseClient):
             dict: Paginated invoice list
         """
         validated = self._validate(filters, "invoice_query_all")
-        return self.post("invoice_query_all", validated, encrypt=True)
+        return self._send("invoice_query_all", validated, encrypt=True, decrypt=True)
     
     def verify_invoices_batch(self, invoice_checks: List[Dict[str, str]]) -> Dict[str, Any]:
         """
         Batch verify multiple invoices (T117).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             invoice_checks: List of {invoiceNo, invoiceType} objects
@@ -238,7 +245,7 @@ class Client(BaseClient):
             {"invoiceNo": check["invoiceNo"], "invoiceType": check["invoiceType"]}
             for check in invoice_checks
         ]
-        return self.post("invoice_checks", payload, encrypt=True)
+        return self._send("invoice_checks", payload, encrypt=True, decrypt=True)
     
     # =========================================================================
     # CREDIT/DEBIT NOTE OPERATIONS
@@ -247,6 +254,7 @@ class Client(BaseClient):
     def apply_credit_note(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Apply for credit note (T110).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             data: Credit note application data
@@ -255,11 +263,12 @@ class Client(BaseClient):
             dict: Application response with referenceNo
         """
         validated = self._validate(data, "credit_application")
-        return self.post("credit_application", validated, encrypt=True)
+        return self._send("credit_application", validated, encrypt=True, decrypt=True)
     
     def apply_debit_note(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Apply for debit note (T110 with category code 104).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             data: Debit note application data
@@ -269,11 +278,12 @@ class Client(BaseClient):
         """
         data["invoiceApplyCategoryCode"] = "104"
         validated = self._validate(data, "credit_application")
-        return self.post("credit_application", validated, encrypt=True)
+        return self._send("credit_application", validated, encrypt=True, decrypt=True)
     
     def query_credit_note_status(self, filters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Query credit/debit note application status (T111).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             filters: Query filters
@@ -282,11 +292,12 @@ class Client(BaseClient):
             dict: Application status list
         """
         validated = self._validate(filters, "credit_note_query")
-        return self.post("credit_note_status", validated, encrypt=True)
+        return self._send("credit_note_status", validated, encrypt=True, decrypt=True)
     
     def get_credit_application_detail(self, application_id: str) -> Dict[str, Any]:
         """
         Get credit note application details (T112).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             application_id: Application ID
@@ -295,7 +306,7 @@ class Client(BaseClient):
             dict: Application details
         """
         validated = self._validate({"id": application_id}, "credit_note_details")
-        return self.post("credit_application_detail", validated, encrypt=True)
+        return self._send("credit_application_detail", validated, encrypt=True, decrypt=True)
     
     def approve_credit_note(
         self,
@@ -306,6 +317,7 @@ class Client(BaseClient):
     ) -> Dict[str, Any]:
         """
         Approve or reject credit note (T113).
+        Request: Encrypted, Response: Not Encrypted
         
         Args:
             reference_no: Application reference number
@@ -322,7 +334,7 @@ class Client(BaseClient):
             "taskId": task_id,
             "remark": remark
         }
-        return self.post("credit_note_approval", payload, encrypt=True)
+        return self._send("credit_note_approval", payload, encrypt=True, decrypt=False)
     
     def cancel_credit_note_application(
         self,
@@ -334,6 +346,7 @@ class Client(BaseClient):
     ) -> Dict[str, Any]:
         """
         Cancel credit/debit note application (T114).
+        Request: Encrypted, Response: Not Encrypted
         
         Args:
             ori_invoice_id: Original invoice ID
@@ -353,11 +366,12 @@ class Client(BaseClient):
             "invoiceApplyCategoryCode": cancel_type
         }
         validated = self._validate(payload, "credit_note_cancel")
-        return self.post("credit_note_cancel", validated, encrypt=True)
+        return self._send("credit_note_cancel", validated, encrypt=True, decrypt=False)
     
     def query_invalid_credit_note(self, invoice_no: str) -> Dict[str, Any]:
         """
         Query invalid credit note details (T122).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             invoice_no: Invoice number
@@ -365,7 +379,7 @@ class Client(BaseClient):
         Returns:
             dict: Credit note details
         """
-        return self.post("query_invalid_credit", {"invoiceNo": invoice_no}, encrypt=True)
+        return self._send("query_invalid_credit", {"invoiceNo": invoice_no}, encrypt=True, decrypt=True)
     
     def void_credit_debit_application(
         self,
@@ -374,6 +388,7 @@ class Client(BaseClient):
     ) -> Dict[str, Any]:
         """
         Void credit/debit note application (T120).
+        Request: Encrypted, Response: Not Encrypted
         
         Args:
             business_key: Business key
@@ -383,7 +398,7 @@ class Client(BaseClient):
             dict: Void response
         """
         payload = {"businessKey": business_key, "referenceNo": reference_no}
-        return self.post("void_application", payload, encrypt=True)
+        return self._send("void_application", payload, encrypt=True, decrypt=False)
     
     # =========================================================================
     # TAXPAYER & BRANCH OPERATIONS
@@ -396,6 +411,7 @@ class Client(BaseClient):
     ) -> Dict[str, Any]:
         """
         Query taxpayer information (T119).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             tin: Taxpayer ID
@@ -406,11 +422,12 @@ class Client(BaseClient):
         """
         payload = {"tin": tin, "ninBrn": nin_brn}
         validated = self._validate(payload, "query_taxpayer")
-        return self.post("query_taxpayer", validated, encrypt=True)
+        return self._send("query_taxpayer", validated, encrypt=True, decrypt=True)
     
     def get_registered_branches(self, tin: Optional[str] = None) -> Dict[str, Any]:
         """
         Get registered branches (T138).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             tin: Taxpayer ID
@@ -419,11 +436,12 @@ class Client(BaseClient):
             dict: Branch list
         """
         payload = {"tin": tin} if tin else {}
-        return self.post("get_branches", payload, encrypt=True)
+        return self._send("get_branches", payload, encrypt=True, decrypt=True)
     
     def check_taxpayer_type(self, tin: str) -> Dict[str, Any]:
         """
         Check taxpayer VAT type (T137).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             tin: Taxpayer ID
@@ -431,7 +449,7 @@ class Client(BaseClient):
         Returns:
             dict: Taxpayer type information
         """
-        return self.post("check_taxpayer_type", {"tin": tin}, encrypt=True)
+        return self._send("check_taxpayer_type", {"tin": tin}, encrypt=True, decrypt=True)
     
     # =========================================================================
     # COMMODITY & EXCISE OPERATIONS
@@ -444,6 +462,7 @@ class Client(BaseClient):
     ) -> Dict[str, Any]:
         """
         Query commodity categories with pagination (T124).
+        Request: Not Encrypted, Response: Not Encrypted
         
         Args:
             page_no: Page number
@@ -453,20 +472,22 @@ class Client(BaseClient):
             dict: Paginated category list
         """
         payload = {"pageNo": page_no, "pageSize": page_size}
-        return self.post("query_commodity_category_page", payload, encrypt=False)
+        return self._send("query_commodity_category_page", payload, encrypt=False, decrypt=False)
     
     def query_commodity_categories_all(self) -> Dict[str, Any]:
         """
         Query all commodity categories (T123).
+        Request: Not Encrypted, Response: Not Encrypted
         
         Returns:
             dict: Category list
         """
-        return self.post("query_commodity_category", {}, encrypt=False)
+        return self._send("query_commodity_category", {}, encrypt=False, decrypt=False)
     
     def sync_commodity_categories(self, local_version: str) -> Dict[str, Any]:
         """
         Sync commodity categories incrementally (T134).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             local_version: Local version number
@@ -474,20 +495,22 @@ class Client(BaseClient):
         Returns:
             dict: Updated categories
         """
-        return self.post(
+        return self._send(
             "commodity_incremental",
             {"commodityCategoryVersion": local_version},
-            encrypt=True
+            encrypt=True,
+            decrypt=True
         )
     
     def query_excise_duty_codes(self) -> Dict[str, Any]:
         """
         Query excise duty codes (T125).
+        Request: Not Encrypted, Response: Not Encrypted
         
         Returns:
             dict: Excise duty list
         """
-        return self.post("query_excise_duty", {}, encrypt=False)
+        return self._send("query_excise_duty", {}, encrypt=False, decrypt=False)
     
     # =========================================================================
     # EXCHANGE RATE OPERATIONS
@@ -496,6 +519,7 @@ class Client(BaseClient):
     def get_exchange_rate(self, currency: str) -> Dict[str, Any]:
         """
         Get exchange rate for currency (T121).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             currency: Currency code (e.g., "USD")
@@ -503,16 +527,17 @@ class Client(BaseClient):
         Returns:
             dict: Exchange rate information
         """
-        return self.post("get_exchange_rate", {"currency": currency}, encrypt=True)
+        return self._send("get_exchange_rate", {"currency": currency}, encrypt=True, decrypt=True)
     
     def get_all_exchange_rates(self) -> Dict[str, Any]:
         """
         Get all exchange rates (T126).
+        Request: Not Encrypted, Response: Encrypted
         
         Returns:
             dict: All exchange rates
         """
-        return self.post("get_exchange_rates", {}, encrypt=False)
+        return self._send("get_exchange_rates", {}, encrypt=False, decrypt=True)
     
     # =========================================================================
     # GOODS & STOCK OPERATIONS
@@ -521,6 +546,7 @@ class Client(BaseClient):
     def upload_goods(self, goods: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Upload goods to EFRIS (T130).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             goods: List of goods data
@@ -528,11 +554,12 @@ class Client(BaseClient):
         Returns:
             dict: Upload results
         """
-        return self.post("goods_upload", goods, encrypt=True)
+        return self._send("goods_upload", goods, encrypt=True, decrypt=True)
     
     def inquire_goods(self, filters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Inquire goods (T127).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             filters: Query filters
@@ -540,7 +567,7 @@ class Client(BaseClient):
         Returns:
             dict: Goods list
         """
-        return self.post("goods_inquiry", filters, encrypt=True)
+        return self._send("goods_inquiry", filters, encrypt=True, decrypt=True)
     
     def query_goods_by_code(
         self,
@@ -549,6 +576,7 @@ class Client(BaseClient):
     ) -> Dict[str, Any]:
         """
         Query goods by code (T144).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             goods_code: Goods code
@@ -560,11 +588,12 @@ class Client(BaseClient):
         payload = {"goodsCode": goods_code}
         if tin:
             payload["tin"] = tin
-        return self.post("query_goods_by_code", payload, encrypt=True)
+        return self._send("query_goods_by_code", payload, encrypt=True, decrypt=True)
     
     def query_stock_quantity(self, goods_id: str) -> Dict[str, Any]:
         """
         Query stock quantity (T128).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             goods_id: Goods ID
@@ -572,11 +601,12 @@ class Client(BaseClient):
         Returns:
             dict: Stock information
         """
-        return self.post("query_stock", {"id": goods_id}, encrypt=True)
+        return self._send("query_stock", {"id": goods_id}, encrypt=True, decrypt=True)
     
     def maintain_stock(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Maintain stock levels (T131).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             data: Stock maintenance data
@@ -585,11 +615,12 @@ class Client(BaseClient):
             dict: Maintenance results
         """
         validated = self._validate(data, "stock_maintain")
-        return self.post("stock_maintain", validated, encrypt=True)
+        return self._send("stock_maintain", validated, encrypt=True, decrypt=True)
     
     def transfer_stock(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Transfer stock between branches (T139).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             data: Transfer data
@@ -597,7 +628,7 @@ class Client(BaseClient):
         Returns:
             dict: Transfer results
         """
-        return self.post("stock_transfer", data, encrypt=True)
+        return self._send("stock_transfer", data, encrypt=True, decrypt=True)
     
     # =========================================================================
     # REPORTING & LOGGING
@@ -606,6 +637,7 @@ class Client(BaseClient):
     def upload_z_report(self, report_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Upload Z-report (T116).
+        Request: Encrypted, Response: Encrypted
         
         Args:
             report_data: Z-report data
@@ -613,11 +645,12 @@ class Client(BaseClient):
         Returns:
             dict: Upload response
         """
-        return self.post("z_report_upload", report_data, encrypt=True)
+        return self._send("z_report_upload", report_data, encrypt=True, decrypt=True)
     
     def upload_exception_logs(self, logs: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Upload exception logs (T132).
+        Request: Encrypted, Response: Not Encrypted
         
         Args:
             logs: List of exception log entries
@@ -634,7 +667,7 @@ class Client(BaseClient):
             }
             for log in logs
         ]
-        return self.post("exception_log_upload", payload, encrypt=True)
+        return self._send("exception_log_upload", payload, encrypt=True, decrypt=False)
     
     # =========================================================================
     # UTILITY METHODS
@@ -645,29 +678,54 @@ class Client(BaseClient):
         Get server time (T101).
         
         Returns:
-            str: Server timestamp
+            str: Server timestamp in dd/MM/yyyy HH:mm:ss format
         """
         resp = self.test_interface()
         if "data" in resp and "content" in resp["data"]:
-            return resp["data"]["content"].get("currentTime")
+            return resp["data"]["content"].get("currentTime", "")
         return resp.get("currentTime", "")
     
-    def is_time_synced(self, tolerance_minutes: int = 10) -> bool:
+    def is_time_synced(self, tolerance_minutes: int = 10, max_retries: int = 3) -> bool:
         """
         Check if client time is synchronized with server.
+        Auto-retries to handle transient issues.
         
         Args:
             tolerance_minutes: Maximum allowed difference
+            max_retries: Number of retry attempts
         
         Returns:
-            bool: True if synchronized
+            bool: True if synchronized (or successfully retried)
         """
         from .utils import get_uganda_timestamp, validate_time_sync
-        server_time_str = self.get_server_time()
-        if not server_time_str:
-            return False
-        client_time_str = get_uganda_timestamp()
-        return validate_time_sync(client_time_str, server_time_str, tolerance_minutes)
+        import time
+        
+        for attempt in range(max_retries):
+            try:
+                server_time_str = self.get_server_time()
+                if not server_time_str:
+                    logger.warning(f"Attempt {attempt+1}: Could not retrieve server time")
+                    time.sleep(1)
+                    continue
+                
+                client_time_str = get_uganda_timestamp()
+                
+                if validate_time_sync(client_time_str, server_time_str, tolerance_minutes):
+                    if attempt > 0:
+                        logger.info(f"Time sync successful after {attempt+1} attempt(s)")
+                    return True
+                
+                logger.warning(f"Attempt {attempt+1}: Time sync failed (diff > {tolerance_minutes}min)")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    
+            except Exception as e:
+                logger.warning(f"Attempt {attempt+1}: Time sync check error: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+        
+        logger.error(f"Time sync failed after {max_retries} attempts")
+        return False
     
     def refresh_aes_key_if_needed(self) -> bool:
         """

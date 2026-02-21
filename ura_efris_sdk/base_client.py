@@ -5,12 +5,12 @@ All API clients inherit from this base class.
 """
 import requests
 import json
+import logging
 from typing import Dict, Any, Optional
 from .utils import (
     build_encrypted_request,
     build_unencrypted_request,
-    unwrap_response,
-    get_uganda_timestamp
+    unwrap_response
 )
 from .exceptions import ApiException, EncryptionException
 from .key_client import KeyClient
@@ -25,8 +25,6 @@ class BaseClient:
         - Request encryption/decryption
         - Interface code mapping
         - Endpoint URL resolution
-    
-    Note: This is a base class. Use Client class for business logic methods.
     """
     
     # Interface code mapping (API endpoint identifiers)
@@ -75,20 +73,16 @@ class BaseClient:
         Initialize base client with configuration and key manager.
         
         Args:
-            config: Configuration dictionary (from config.py)
+            config: Configuration dictionary
             key_client: KeyClient instance for cryptographic operations
         """
         self.config = config
         self.key_client = key_client
         self.timeout = config.get("http", {}).get("timeout", 30)
+        self.logger = logging.getLogger(__name__)
     
     def _get_endpoint_url(self) -> str:
-        """
-        Get the API endpoint URL based on environment.
-        
-        Returns:
-            str: API endpoint URL
-        """
+        """Get the API endpoint URL based on environment."""
         env = self.config.get("env", "sbx")
         if env == "sbx":
             return "https://efristest.ura.go.ug/efrisws/ws/taapp/getInformation"
@@ -98,22 +92,17 @@ class BaseClient:
         self,
         interface_key: str,
         payload: Dict[str, Any],
-        encrypt: bool = True
+        encrypt: bool = True,
+        decrypt: bool = False
     ) -> Dict[str, Any]:
         """
         Send HTTP request to EFRIS API.
-        
-        Process:
-            1. Validate interface code
-            2. Fetch AES key if encryption is enabled
-            3. Build request envelope (encrypted or unencrypted)
-            4. Send HTTP POST request
-            5. Unwrap and decrypt response
         
         Args:
             interface_key: Interface name from INTERFACES dict
             payload: Request payload dictionary
             encrypt: Whether to encrypt the request
+            decrypt: Whether to decrypt the response
         
         Returns:
             dict: API response dictionary
@@ -132,13 +121,19 @@ class BaseClient:
         interface_code = self.INTERFACES[interface_key]
         aes_key = None
         
-        # Fetch AES key for encryption
-        if encrypt:
+        # Fetch AES key for encryption/decryption
+        if encrypt or decrypt:
             aes_key = self.key_client.fetch_aes_key()
+            if not aes_key:
+                raise EncryptionException("AES symmetric key not available")
+        
+        # Load private key for signing (if encrypting)
+        private_key = None
+        if encrypt:
+            private_key = self.key_client._load_private_key()
         
         # Build request envelope
-        if encrypt and aes_key:
-            private_key = self.key_client._load_private_key()
+        if encrypt and aes_key and private_key:
             request_envelope = build_encrypted_request(
                 content=payload,
                 aes_key=aes_key,
@@ -146,7 +141,8 @@ class BaseClient:
                 tin=self.config["tin"],
                 device_no=self.config["device_no"],
                 brn=self.config.get("brn", ""),
-                private_key=private_key
+                private_key=private_key,
+                taxpayer_id=self.key_client.taxpayer_id
             )
         else:
             request_envelope = build_unencrypted_request(
@@ -154,8 +150,13 @@ class BaseClient:
                 interface_code=interface_code,
                 tin=self.config["tin"],
                 device_no=self.config["device_no"],
-                brn=self.config.get("brn", "")
+                brn=self.config.get("brn", ""),
+                taxpayer_id=self.key_client.taxpayer_id
             )
+        
+        # Debug logging (enable in development)
+        self.logger.debug(f"Sending request to interface {interface_code}")
+        self.logger.debug(f"Encrypt: {encrypt}, Decrypt: {decrypt}")
         
         # Send HTTP request
         url = self._get_endpoint_url()
@@ -179,46 +180,28 @@ class BaseClient:
         except json.JSONDecodeError as e:
             raise ApiException(f"Invalid JSON response: {e}", status_code=500)
         
-        # Decrypt response if encrypted
-        if encrypt and aes_key:
-            return unwrap_response(resp_json, aes_key)
+        # Debug: Log response before unwrapping
+        self.logger.debug(f"Response returnCode: {resp_json.get('returnStateInfo', {}).get('returnCode')}")
         
-        return resp_json
+        # Unwrap and decrypt response
+        return unwrap_response(resp_json, aes_key if decrypt else None)
     
     def get(
         self,
         interface_key: str,
         params: Optional[Dict] = None,
-        encrypt: bool = True
+        encrypt: bool = True,
+        decrypt: bool = False
     ) -> Dict:
-        """
-        Send GET-style request (uses POST with params).
-        
-        Args:
-            interface_key: Interface name
-            params: Request parameters
-            encrypt: Whether to encrypt
-        
-        Returns:
-            dict: API response
-        """
-        return self._send(interface_key, params or {}, encrypt=encrypt)
+        """Send GET-style request (uses POST with params)."""
+        return self._send(interface_key, params or {}, encrypt=encrypt, decrypt=decrypt)
     
     def post(
         self,
         interface_key: str,
         data: Optional[Dict] = None,
-        encrypt: bool = True
+        encrypt: bool = True,
+        decrypt: bool = False
     ) -> Dict:
-        """
-        Send POST-style request.
-        
-        Args:
-            interface_key: Interface name
-            data: Request data
-            encrypt: Whether to encrypt
-        
-        Returns:
-            dict: API response
-        """
-        return self._send(interface_key, data or {}, encrypt=encrypt)
+        """Send POST-style request."""
+        return self._send(interface_key, data or {}, encrypt=encrypt, decrypt=decrypt)

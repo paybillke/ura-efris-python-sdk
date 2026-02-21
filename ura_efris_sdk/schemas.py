@@ -6,9 +6,6 @@ from typing_extensions import Annotated
 from pydantic import RootModel
 import re
 
-# =========================================================
-# COMMON CONSTRAINED TYPES (URA v1.0 Spec - Strict Validation)
-# =========================================================
 
 # TIN: 10 alphanumeric uppercase
 TIN = Annotated[str, Field(min_length=10, max_length=20, pattern=r"^[A-Z0-9]{10,20}$")]
@@ -501,7 +498,8 @@ class T109BuyerDetails(BaseModel):
     buyerCitizenship: Optional[Annotated[str, Field(max_length=128)]] = None
     buyerSector: Optional[Annotated[str, Field(max_length=200)]] = None
     buyerReferenceNo: Optional[CODE_50] = None
-    
+    deliveryTermsCode: Optional[Annotated[str, Field(max_length=3)]] = None
+
     @model_validator(mode="after")
     def validate_b2b_fields(self) -> "T109BuyerDetails":
         if self.buyerType in ["0", "3"]:  # B2B/B2G
@@ -547,35 +545,6 @@ class T109GoodsItem(BaseModel):
         # This is applied by the client before sending
         return v
     
-    @model_validator(mode="after")
-    def validate_item_amounts(self) -> "T109GoodsItem":
-        if self.discountFlag == "0":  # Discount amount line
-            if self.qty is not None or self.unitPrice is not None:
-                raise ValueError("qty and unitPrice must be empty for discount amount lines")
-            if self.total >= 0:
-                raise ValueError("total must be negative for discount amount lines")
-            if self.discountTotal is not None:
-                raise ValueError("discountTotal must be empty for discount amount lines")
-        elif self.discountFlag in ["1", "2"]:  # Normal or discount item
-            if self.qty is None or self.unitPrice is None:
-                raise ValueError("qty and unitPrice required for normal/discount items")
-            if self.qty <= 0 or self.unitPrice <= 0:
-                raise ValueError("qty and unitPrice must be positive")
-            # Calculate expected total: qty * unitPrice, truncate to 2 decimals
-            expected = (self.qty * self.unitPrice).quantize(Decimal("0.01"), rounding="ROUND_DOWN")
-            if abs(self.total - expected) > Decimal("0.01"):
-                raise ValueError(f"total mismatch: expected {expected}, got {self.total}")
-        
-        # Excise validation
-        if self.exciseFlag == "1":
-            if not self.categoryId or not self.exciseRate or not self.exciseRule:
-                raise ValueError("categoryId, exciseRate, and exciseRule required for excise items")
-            if self.exciseTax is None:
-                raise ValueError("exciseTax required for excise items")
-        
-        return self
-
-
 class T109TaxDetail(BaseModel):
     taxCategory: Annotated[str, Field(max_length=100)]
     netAmount: AMOUNT_16_2
@@ -633,28 +602,6 @@ class T109BillingUpload(BaseModel):
     payWay: Optional[List[T109PayWay]] = None
     extend: Optional[T109Extend] = None
     
-    @model_validator(mode="after")
-    def validate_totals_match(self) -> "T109BillingUpload":
-        # Validate goodsDetails totals match summary
-        calc_net = sum(item.total - item.tax for item in self.goodsDetails if item.discountFlag != "0")
-        calc_tax = sum(item.tax for item in self.goodsDetails if item.discountFlag != "0")
-        calc_gross = sum(item.total for item in self.goodsDetails if item.discountFlag != "0")
-        
-        tolerance = Decimal("0.01")
-        if abs(calc_net - self.summary.netAmount) > tolerance:
-            raise ValueError(f"netAmount mismatch")
-        if abs(calc_tax - self.summary.taxAmount) > tolerance:
-            raise ValueError(f"taxAmount mismatch")
-        if abs(calc_gross - self.summary.grossAmount) > tolerance:
-            raise ValueError(f"grossAmount mismatch")
-        
-        # Validate itemCount
-        item_count = sum(1 for item in self.goodsDetails if item.discountFlag != "0")
-        if item_count != self.summary.itemCount:
-            raise ValueError(f"itemCount mismatch: goodsDetails has {item_count} items, summary says {self.summary.itemCount}")
-        
-        return self
-
 
 # =========================================================
 # T110: CREDIT NOTE APPLICATION

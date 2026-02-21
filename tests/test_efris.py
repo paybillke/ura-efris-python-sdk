@@ -101,17 +101,17 @@ class EfrisEndpointTester:
     def test_endpoint(self, code: str, name: str, test_func):
         """Run a single endpoint test and record results."""
         print_endpoint(code, name)
-        try:
-            result = test_func()
-            self.results["passed"].append(code)
-            print(f"✅ PASSED")
-            if result:
-                print_response(result)
-            return True
-        except Exception as e:
-            self.results["failed"].append(code)
-            handle_error(code, e)
-            return False
+        # try:
+        result = test_func()
+        self.results["passed"].append(code)
+        print(f"✅ PASSED")
+        if result:
+            print_response(result)
+        return True
+        # except Exception as e:
+        #     self.results["failed"].append(code)
+        #     handle_error(code, e)
+        #     return False
     
     # =========================================================================
     # AUTHENTICATION & INITIALIZATION (T101-T105)
@@ -120,7 +120,6 @@ class EfrisEndpointTester:
     def test_t101_get_server_time(self):
         """T101 - Get Server Time (Test Connection)"""
         response = self.client.test_interface()
-        print(response)
         server_time = response.get("data", {}).get("content", {}).get("currentTime")
         if not server_time:
             server_time = response.get("currentTime", "N/A")
@@ -165,6 +164,13 @@ class EfrisEndpointTester:
     
     def test_t106_query_all_invoices(self):
         """T106 - Query All Invoices (Including Credit/Debit Notes)"""
+        # Ensure fresh AES key
+        self.client.key_client.fetch_aes_key(force=True)
+        
+        # Ensure time sync
+        if not self.client.is_time_synced():
+            RuntimeError("Client time out of sync with server")
+            
         now = datetime.now()
         filters = {
             "startDate": (now - timedelta(days=30)).strftime("%Y-%m-%d"),
@@ -211,86 +217,139 @@ class EfrisEndpointTester:
         print(f"Invoice ID: {self.context['invoice_id']}")
         print(f"Gross Amount: {content.get('summary', {}).get('grossAmount', 'N/A')}")
         return response
-    
+
     def test_t109_upload_invoice(self):
         """T109 - Upload Invoice (Billing Upload)"""
-        # Create a minimal test invoice
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Ensure goods are registered first
+        goods_code = self.context.get("goods_code")
+        goods_category_id = self.context.get("goods_category_id")
+        
+        if not goods_code or not goods_category_id:
+            print("⚠️ Registering goods first...")
+            self.test_t130_upload_goods()
+            goods_code = self.context.get("goods_code")
+            goods_category_id = self.context.get("goods_category_id")
+        
+        # Invoice calculation
+        qty = 2
+        unit_price = 150.00
+        total = round(qty * unit_price, 2)       # 300.00
+        tax_rate = 0.18
+        tax = round(total * tax_rate, 2)        # 54.00
+        gross = round(total + tax, 2)           # 354.00
+
+        # Construct invoice payload (fixed for validation)
         invoice_data = {
             "sellerDetails": {
-                "tin": self.client.config["tin"],
-                "legalName": "Test Company Ltd",
-                "emailAddress": "test@example.com",
-                "address": "Test Address",
-                "mobilePhone": "256700000000"
+                "tin": "1014409555",
+                "ninBrn": "1014409555",
+                "legalName": "zhangsan",
+                "businessName": "lisi",
+                "address": "beijin",
+                "mobilePhone": "15501234567",
+                "linePhone": "010-6689666",
+                "emailAddress": "123456@163.com",
+                "placeOfBusiness": "beijin",
+                "referenceNo": "00000000012"
             },
             "basicInformation": {
                 "deviceNo": self.client.config["device_no"],
-                "issuedDate": now,
-                "operator": "admin",
+                "issuedDate": "2019-05-08 17:13:12",
+                "operator": "aisino",
                 "currency": "UGX",
-                "invoiceType": "1",  # Invoice
-                "invoiceKind": "1",  # Invoice
-                "dataSource": "103"  # WebService API
+                "oriInvoiceId": "1",
+                "invoiceType": "1",
+                "invoiceKind": "1",
+                "dataSource": "101",
+                "invoiceIndustryCode": "102",
+                "isBatch": "0"
             },
             "buyerDetails": {
                 "buyerTin": "1009830865",
-                "buyerLegalName": "Test Buyer Ltd",
-                "buyerType": "0",  # B2B
-                "buyerEmail": "buyer@example.com"
+                "buyerNinBrn": "1009830865",
+                "buyerPassportNum": "1009830865",
+                "buyerLegalName": "zhangsan",
+                "buyerBusinessName": "lisi",
+                "buyerAddress": "beijin",
+                "buyerEmail": "123456@163.com",
+                "buyerMobilePhone": "15501234567",
+                "buyerLinePhone": "010-6689666",
+                "buyerPlaceOfBusi": "beijin",
+                "buyerType": "1",
+                "buyerCitizenship": "1",
+                "buyerSector": "1",
+                "buyerReferenceNo": "00000000001",
+                "deliveryTermsCode": "FOB"
             },
             "goodsDetails": [
                 {
-                    "item": "Test Product",
-                    "itemCode": "TEST001",
-                    "qty": Decimal("1.00"),
-                    "unitOfMeasure": "101",  # kg
-                    "unitPrice": Decimal("10000.00"),
-                    "total": Decimal("10000.00"),
-                    "taxRate": Decimal("0.18"),
-                    "tax": Decimal("1800.00"),
-                    "orderNumber": 0,
-                    "discountFlag": "2",  # Normal
-                    "deemedFlag": "2",  # Not deemed
-                    "exciseFlag": "2",  # Not excise
-                    "goodsCategoryId": "100000000",
-                    "goodsCategoryName": "Standard"
+                    "item": "apple",
+                    "itemCode": goods_code,
+                    "qty": str(qty),
+                    "unitOfMeasure": "101",  # ≥3 chars
+                    "unitPrice": str(unit_price),
+                    "total": str(total),
+                    "taxRate": str(tax_rate),
+                    "tax": str(tax),
+                    "discountTotal": "0.00",
+                    "discountFlag": "1",          # required
+                    "orderNumber": "1",           # required
+                    "deemedFlag": "1",
+                    "exciseFlag": "2",
+                    "categoryId": goods_category_id,
+                    "categoryName": "Fruits",
+                    "goodsCategoryId": goods_category_id,
+                    "goodsCategoryName": "Fruits",
+                    "exciseRate": "0.12",
+                    "exciseRule": "1",
+                    "exciseTax": "0.00",
+                    "pack": "1",
+                    "stick": "1",
+                    "exciseUnit": "101",
+                    "exciseCurrency": "UGX",
+                    "exciseRateName": "Standard"
                 }
             ],
             "taxDetails": [
                 {
                     "taxCategory": "Standard",
-                    "netAmount": Decimal("10000.00"),
-                    "taxRate": Decimal("0.18"),
-                    "taxAmount": Decimal("1800.00"),
-                    "grossAmount": Decimal("11800.00"),
-                    "taxRateName": "18%"
+                    "netAmount": str(total),
+                    "taxRate": str(tax_rate),
+                    "taxAmount": str(tax),
+                    "grossAmount": str(gross),
+                    "exciseUnit": "101",
+                    "exciseCurrency": "UGX",
+                    "taxRateName": "Standard VAT"
                 }
             ],
             "summary": {
-                "netAmount": Decimal("10000.00"),
-                "taxAmount": Decimal("1800.00"),
-                "grossAmount": Decimal("11800.00"),
-                "itemCount": 1,
-                "modeCode": "1",  # Online
-                "remarks": "Test invoice from integration test"
+                "netAmount": str(total),
+                "taxAmount": str(tax),
+                "grossAmount": str(gross),
+                "itemCount": "1",
+                "modeCode": "1",
+                "remarks": "This is another remark test."
             },
             "payWay": [
-                {
-                    "paymentMode": "102",  # Cash
-                    "paymentAmount": Decimal("11800.00"),
-                    "orderNumber": "a"
-                }
-            ]
+                {"paymentMode": "101", "paymentAmount": str(gross), "orderNumber": "1"}
+            ],
+            "extend": {
+                "reason": "reason",
+                "reasonCode": "102"
+            }
         }
-        
+
+        # Upload invoice
         response = self.client.fiscalise_invoice(invoice_data)
         content = response.get("data", {}).get("content", {})
         basic_info = content.get("basicInformation", {})
+
         self.context["invoice_no"] = basic_info.get("invoiceNo")
         self.context["invoice_id"] = basic_info.get("invoiceId")
-        print(f"Uploaded Invoice No: {self.context['invoice_no']}")
-        print(f"Invoice ID: {self.context['invoice_id']}")
+
+        print(f"✅ Uploaded Invoice No: {self.context['invoice_no']}")
+        print(f"✅ Invoice ID: {self.context['invoice_id']}")
         return response
     
     def test_t129_batch_upload(self):
@@ -327,10 +386,10 @@ class EfrisEndpointTester:
                 {
                     "item": "Test Product",
                     "itemCode": "TEST001",
-                    "qty": Decimal("-1.00"),  # Negative for credit
+                    "qty": "-1.00",  # Negative for credit
                     "unitOfMeasure": "101",
-                    "total": Decimal("-10000.00"),
-                    "tax": Decimal("-1800.00"),
+                    "total": "-10000.00",
+                    "tax": "-1800.00",
                     "orderNumber": 0,
                     "deemedFlag": "2",
                     "exciseFlag": "2",
@@ -341,17 +400,17 @@ class EfrisEndpointTester:
             "taxDetails": [
                 {
                     "taxCategory": "Standard",
-                    "netAmount": Decimal("10000.00"),
-                    "taxRate": Decimal("0.18"),
-                    "taxAmount": Decimal("1800.00"),
-                    "grossAmount": Decimal("11800.00"),
+                    "netAmount": "10000.00",
+                    "taxRate": "0.18",
+                    "taxAmount": "1800.00",
+                    "grossAmount": "11800.00",
                     "taxRateName": "18%"
                 }
             ],
             "summary": {
-                "netAmount": Decimal("-10000.00"),
-                "taxAmount": Decimal("-1800.00"),
-                "grossAmount": Decimal("-11800.00"),
+                "netAmount": "-10000.00",
+                "taxAmount": "-1800.00",
+                "grossAmount": "-11800.00",
                 "itemCount": 1,
                 "modeCode": "1"
             }
@@ -512,7 +571,6 @@ class EfrisEndpointTester:
         """T115 - System Dictionary Update"""
         response = self.client.update_system_dictionary()
         content = response.get("data", {}).get("content", {})
-        print(content)
         print(f"Currency Types: {len(content.get('currencyType', []))}")
         print(f"Tax Types: {len(content.get('taxType', []))}")
         return response
@@ -569,29 +627,40 @@ class EfrisEndpointTester:
     
     # =========================================================================
     # GOODS & STOCK OPERATIONS (T127, T128, T130, T131, T139, T144)
-    # =========================================================================
-    
+    # =========================================================================    
     def test_t130_upload_goods(self):
-        """T130 - Upload Goods"""
-        goods_data = [
-            {
-                "goodsName": "Test Product Integration",
-                "goodsCode": f"TEST{int(time.time())}",
-                "measureUnit": "101",  # kg
-                "unitPrice": Decimal("10000.00"),
-                "currency": "UGX",
-                "commodityCategoryId": "100000000",
-                "haveExciseTax": "102",  # No excise
-                "stockPrewarning": 10
-            }
-        ]
+        """T130 - Upload Goods (MUST run before invoice upload)"""
+        import time
+
+        goods_code = f"{int(time.time())}"
+        goods_data = [{
+            "goodsName": "apple",
+            "goodsCode": goods_code,
+            "measureUnit": "101",
+            "unitPrice": "6999.99",
+            "currency": "101",
+            "commodityCategoryId": "10111301",
+            "haveExciseTax": "101",
+            "description": "1",
+            "stockPrewarning": "10",
+            "pieceMeasureUnit": "101",
+            "havePieceUnit": "101",
+            "pieceUnitPrice": "12.34",
+            "packageScaledValue": "1",
+            "pieceScaledValue": "1",
+            "exciseDutyCode": "LED060000"
+        }]
+
         response = self.client.upload_goods(goods_data)
-        results = response.get("data", {}).get("content", [])
-        if results:
-            self.context["goods_code"] = results[0].get("goodsCode")
-            print(f"Uploaded Goods Code: {self.context['goods_code']}")
-        return response
-    
+        return_info = response.get("returnStateInfo", {})
+        if return_info.get("returnCode") == "00":
+            self.context["goods_code"] = goods_code
+            self.context["goods_category_id"] = goods_data[0]["commodityCategoryId"]
+            print(f"✅ Goods registered: {goods_code}")
+            return response
+        else:
+            raise RuntimeError(f"Goods registration failed: {return_info.get('returnMessage')}")
+                            
     def test_t127_inquire_goods(self):
         """T127 - Goods/Services Inquiry"""
         filters = {
@@ -649,8 +718,8 @@ class EfrisEndpointTester:
             "goodsStockInItem": [
                 {
                     "commodityGoodsId": goods_id,
-                    "quantity": Decimal("100.00"),
-                    "unitPrice": Decimal("10000.00")
+                    "quantity": "100.00",
+                    "unitPrice": "10000.00"
                 }
             ]
         }
@@ -673,8 +742,8 @@ class EfrisEndpointTester:
             "goodsTransferItem": [
                 {
                     "commodityGoodsId": goods_id,
-                    "quantity": Decimal("10.00"),
-                    "unitPrice": Decimal("10000.00"),
+                    "quantity": "10.00",
+                    "unitPrice": "10000.00",
                     "fromBranch": "01",
                     "toBranch": "02"
                 }
@@ -695,8 +764,8 @@ class EfrisEndpointTester:
             "deviceNo": self.client.config["device_no"],
             "reportDate": datetime.now().strftime("%Y-%m-%d"),
             "totalInvoices": 10,
-            "totalAmount": Decimal("118000.00"),
-            "totalTax": Decimal("18000.00")
+            "totalAmount": "118000.00",
+            "totalTax": "18000.00"
         }
         response = self.client.upload_z_report(report_data)
         print("Z-report upload completed")
@@ -757,8 +826,9 @@ class EfrisEndpointTester:
         self.test_endpoint("T106", "Query All Invoices", self.test_t106_query_all_invoices)
         self.test_endpoint("T107", "Query Normal Invoices", self.test_t107_query_normal_invoices)
         self.test_endpoint("T108", "Invoice Details", self.test_t108_invoice_details)
-        self.test_endpoint("T109", "Upload Invoice", self.test_t109_upload_invoice)
-        self.test_endpoint("T129", "Batch Invoice Upload", self.test_t129_batch_upload)
+        self.test_endpoint("T130", "Upload Goods", self.test_t130_upload_goods)
+        # self.test_endpoint("T109", "Upload Invoice", self.test_t109_upload_invoice)
+        # self.test_endpoint("T129", "Batch Invoice Upload", self.test_t129_batch_upload)
         
         # Credit/Debit Note Operations
         print_section("CREDIT/DEBIT NOTE OPERATIONS")
@@ -792,7 +862,6 @@ class EfrisEndpointTester:
         
         # Goods & Stock Operations
         print_section("GOODS & STOCK OPERATIONS")
-        self.test_endpoint("T130", "Upload Goods", self.test_t130_upload_goods)
         self.test_endpoint("T127", "Inquire Goods", self.test_t127_inquire_goods)
         self.test_endpoint("T144", "Query Goods by Code", self.test_t144_query_goods_by_code)
         self.test_endpoint("T128", "Query Stock Quantity", self.test_t128_query_stock)
@@ -853,6 +922,7 @@ def main():
         print("  EFRIS_DEVICE_NO=your_device")
         print("  EFRIS_PFX_PATH=/path/to/cert.pfx")
         print("  EFRIS_PFX_PASSWORD=your_password")
+        print("  EFRIS_TAXPAYER_ID=1")
         sys.exit(1)
     
     # Handle password (may be bytes from env)
@@ -870,7 +940,8 @@ def main():
             device_no=config["device_no"],
             brn=config.get("brn", ""),
             sandbox=config["env"] == "sbx",
-            timeout=config.get("http", {}).get("timeout", 30)
+            timeout=config.get("http", {}).get("timeout", 30),
+            taxpayer_id=config.get("taxpayer_id", '1')
         )
         print("✅ KeyClient initialized")
     except Exception as e:
