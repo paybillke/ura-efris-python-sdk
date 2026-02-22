@@ -39,6 +39,9 @@ https://efris.ura.go.ug/site/manualDownload/downloadManualById?id=17351773313905
 📄 **EFRIS Thumbprint & Device Registration Guide**  
 https://efris.ura.go.ug/site/manualDownload/downloadManualById?id=102729662704726203&language=
 
+📄 **EFRIS Interface Design v23.7 Guide**
+[https://efris.ura.go.ug/site/manualDownload/downloadManualById?id=299638647648159087&language=](https://efris.ura.go.ug/site/manualDownload/downloadManualById?id=299638647648159087&language=)
+
 ---
 
 > ⚠️ **Important Notice**  
