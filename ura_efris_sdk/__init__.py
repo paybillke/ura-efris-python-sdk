@@ -6,7 +6,7 @@ from .client import Client
 from .key_client import KeyClient
 from .config import load_config_from_env, validate_config
 from .exceptions import (
-    ApiException,
+    APIException,
     ValidationException,
     EncryptionException,
     AuthenticationException
@@ -19,7 +19,7 @@ __all__ = [
     "KeyClient", 
     "load_config_from_env",
     "validate_config",
-    "ApiException",
+    "APIException",
     "ValidationException",
     "EncryptionException",
     "AuthenticationException",

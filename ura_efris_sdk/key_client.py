@@ -18,7 +18,7 @@ from cryptography.hazmat.backends import default_backend
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
 from .utils import build_unencrypted_request, sign_rsa_sha1
-from .exceptions import AuthenticationException, ApiException, EncryptionException
+from .exceptions import AuthenticationException, APIException, EncryptionException
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ class KeyClient:
             bytes: AES symmetric key (16/24/32 bytes) or None if fetch fails
         
         Raises:
-            ApiException: If T104 request fails
+            APIException: If T104 request fails
             EncryptionException: If key decryption fails
         """
         # Return cached key if still valid
@@ -176,11 +176,11 @@ class KeyClient:
             )
         except requests.RequestException as e:
             logger.error(f"T104 connection error: {e}")
-            raise ApiException(f"T104 connection error: {e}")
+            raise APIException(f"T104 connection error: {e}")
         
         if response.status_code != 200:
             logger.error(f"T104 HTTP {response.status_code}: {response.text}")
-            raise ApiException(
+            raise APIException(
                 f"T104 HTTP {response.status_code}: {response.text}",
                 status_code=response.status_code
             )
@@ -189,7 +189,7 @@ class KeyClient:
             resp_json = response.json()
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in T104 response: {e}")
-            raise ApiException(f"Invalid JSON in T104 response: {e}")
+            raise APIException(f"Invalid JSON in T104 response: {e}")
         
         return_state = resp_json.get("returnStateInfo", {})
         
@@ -198,7 +198,7 @@ class KeyClient:
             error_msg = return_state.get("returnMessage", "Unknown error")
             error_code = return_state.get("returnCode", "99")
             logger.error(f"T104 failed: {error_msg} (code: {error_code})")
-            raise ApiException(
+            raise APIException(
                 f"T104 failed: {error_msg}",
                 error_code=error_code
             )

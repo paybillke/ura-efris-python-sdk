@@ -1,75 +1,69 @@
 """
-EFRIS Client Exception Classes
-Defines custom exceptions for handling various error scenarios in the EFRIS API client.
+EFRIS Custom Exceptions
 """
-from typing import Optional, Dict, Any
+from typing import Dict, Optional, List
 
 
-class EfrisException(Exception):
-    """
-    Base exception class for all EFRIS-related errors.
-    Provides standardized error handling with status codes and error details.
-    """
-    def __init__(
-        self,
-        message: str = "EFRIS error",
-        status_code: int = 400,
-        error_code: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None
-    ):
-        super().__init__(message)
+class EFRISException(Exception):
+    """Base exception for EFRIS"""
+    def __init__(self, message: str, error_type: str = "UNKNOWN"):
         self.message = message
-        self.status_code = status_code
-        self.error_code = error_code
-        self.details = details or {}
-
-    def __str__(self):
-        """Format exception string with error code if available."""
-        if self.error_code:
-            return f"[{self.error_code}] {self.message}"
-        return self.message
+        self.error_type = error_type
+        super().__init__(self.message)
 
 
-class ApiException(EfrisException):
-    """
-    Raised when the EFRIS API returns an error response.
-    Used for HTTP errors and API-level failures.
-    """
-    pass
-
-
-class ValidationException(EfrisException):
-    """
-    Raised when payload validation fails against Pydantic schemas.
-    Contains detailed field-level validation errors.
-    """
+class ValidationException(EFRISException):
+    """Validation error with field-level details"""
     def __init__(
-        self,
-        message: str = "Validation failed",
-        errors: Optional[Dict[str, str]] = None
+        self, 
+        message: str, 
+        errors: Dict[str, str], 
+        error_type: str = "VALIDATION_ERROR"
     ):
-        super().__init__(message, status_code=400)
-        self.errors = errors or {}
-
+        self.errors = errors
+        super().__init__(message, error_type)
+    
     def __str__(self):
-        """Format validation errors as field: message pairs."""
-        if self.errors:
-            error_msgs = "; ".join(
-                f"{field}: {msg}" for field, msg in self.errors.items()
-            )
-            return f"{self.message}: {error_msgs}"
-        return self.message
+        return f"{self.message}: {self.errors}"
+    
+    def get_field_error(self, field_path: str) -> Optional[str]:
+        """Get error message for specific field"""
+        return self.errors.get(field_path)
+    
+    def has_errors(self) -> bool:
+        """Check if there are any validation errors"""
+        return len(self.errors) > 0
 
 
-class EncryptionException(EfrisException):
-    """
-    Raised when encryption or decryption operations fail.
-    Covers RSA, AES, and key management errors.
-    """
-    pass
+class APIException(EFRISException):
+    """API communication error"""
+    def __init__(
+        self, 
+        message: str, 
+        status_code: Optional[int] = None,
+        return_code: Optional[str] = None,
+        error_type: str = "API_ERROR"
+    ):
+        self.status_code = status_code
+        self.return_code = return_code
+        super().__init__(message, error_type)
 
 
-class AuthenticationException(EfrisException):
+class EncryptionException(EFRISException):
+    """Encryption/decryption error"""
+    def __init__(self, message: str, error_type: str = "ENCRYPTION_ERROR"):
+        super().__init__(message, error_type)
+
+
+class SchemaNotFoundException(EFRISException):
+    """Schema not found in registry"""
+    def __init__(self, schema_key: str):
+        super().__init__(
+            f"Schema '{schema_key}' not found in registry",
+            "SCHEMA_NOT_FOUND"
+        )
+
+class AuthenticationException(EFRISException):
     """
     Raised when authentication fails (e.g., invalid PFX, wrong password).
     Uses HTTP 401 status code by default.

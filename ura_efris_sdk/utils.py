@@ -6,7 +6,6 @@ All cryptographic operations follow URA EFRIS API specifications.
 import base64
 import json
 import logging
-import base64
 import gzip
 from io import BytesIO
 from datetime import datetime
@@ -18,7 +17,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import pkcs12
 import pytz
 import uuid
-from .exceptions import EncryptionException, AuthenticationException
+from .exceptions import EncryptionException
 
 logger = logging.getLogger(__name__)
 
@@ -124,32 +123,23 @@ def decrypt_aes_ecb(
 
     print(f"Decrypting AES-ECB content: encryptCode={encrypt_code}, zipCode={zip_code}")
 
-    # ---------------------------------------------------------
-    # STEP 1 — Base64 decode (EFRIS always encodes content)
-    # ---------------------------------------------------------
     try:
         data_bytes = base64.b64decode(ciphertext_b64)
     except Exception as e:
         raise EncryptionException(f"Base64 decode failed: {e}")
 
-    # ---------------------------------------------------------
-    # GZIP decompress AFTER decryption
-    # ---------------------------------------------------------
     if zip_code == "1":
         try:
             if data_bytes[:2] != b"\x1f\x8b":
-                raise EncryptionException("zipCode=1 but data not gzipped")
+                raise EncryptionException("zipCode=1 but plaintext not gzipped")
 
             data_bytes = gzip.decompress(data_bytes)
         except Exception as e:
             raise EncryptionException(f"GZIP decompression failed: {e}")
 
-    # ---------------------------------------------------------
-    # AES decrypt FIRST (when encryptCode=2)
-    # ---------------------------------------------------------
     if encrypt_code == "2":
         if not key:
-            raise EncryptionException("AES key required for encrypted content")
+            raise EncryptionException("AES key required")
 
         if len(data_bytes) % 16 != 0:
             raise EncryptionException(
@@ -162,9 +152,7 @@ def decrypt_aes_ecb(
         except Exception as e:
             raise EncryptionException(f"AES decryption failed: {e}")
 
-        # -----------------------------------------------------
-        # STEP 3 — PKCS7 unpadding
-        # -----------------------------------------------------
+        # PKCS7 unpadding
         pad_len = padded_plaintext[-1]
 
         if pad_len < 1 or pad_len > 16:
@@ -175,14 +163,11 @@ def decrypt_aes_ecb(
 
         data_bytes = padded_plaintext[:-pad_len]
 
-    # ---------------------------------------------------------
-    # UTF-8 decode
-    # ---------------------------------------------------------
     try:
         return data_bytes.decode("utf-8")
     except Exception as e:
         raise EncryptionException(f"UTF-8 decode failed: {e}")
-
+    
 def decompress_gzip(data):
     try:
         decompressed_data = gzip.decompress(data)
@@ -261,7 +246,7 @@ def build_global_info(
     user: str = "admin",
     longitude: str = "32.5825",
     latitude: str = "0.3476",
-    taxpayer_id: str = ""  # ← Make this configurable
+    taxpayer_id: str = ""
 ) -> dict:
     """Build the globalInfo section of EFRIS API requests."""
     return {
@@ -277,7 +262,7 @@ def build_global_info(
         "deviceNo": device_no,
         "tin": tin,
         "brn": brn,
-        "taxpayerID": taxpayer_id if taxpayer_id else "1",  # ← Use dynamic value from sign-in if available
+        "taxpayerID": taxpayer_id if taxpayer_id else "1",
         "longitude": longitude,
         "latitude": latitude,
         "agentType": "0",
@@ -353,6 +338,7 @@ def build_unencrypted_request(
     tin: str,
     device_no: str,
     brn: str = "",
+    private_key: Any = None,
     taxpayer_id: str = ""
 ) -> dict:
     """
@@ -363,16 +349,21 @@ def build_unencrypted_request(
     """
     # Base64 encode content if not empty
     content_b64 = ""
+    signature = ""
     if content:
         # Serialize to compact JSON (no whitespace)
         json_content = json.dumps(content, separators=(',', ':'), ensure_ascii=False)
         # Base64 encode for transport
         content_b64 = base64.b64encode(json_content.encode('utf-8')).decode('utf-8')
-    
+        signature = sign_rsa_sha1(
+            content_b64.encode(),   # ← SIGN THIS
+            private_key
+        )
+
     return {
         "data": {
             "content": content_b64,  # Base64 encoded (or empty string)
-            "signature": "",  # No signature for unencrypted requests
+            "signature": signature,  # Signature for unencrypted requests
             "dataDescription": {
                 "codeType": "0",  # Not encrypted
                 "encryptCode": "1",  # RSA (unused when codeType=0)
@@ -395,7 +386,7 @@ def unwrap_response(response_json: dict, aes_key: Optional[bytes] = None) -> dic
     - codeType="0": Base64 decode only (plain JSON)
     - codeType="1": Base64 decode + AES-ECB decrypt + PKCS7 unpad
     """
-    from .exceptions import ApiException, EncryptionException
+    from .exceptions import APIException, EncryptionException
     
     return_state = response_json.get("returnStateInfo", {})
     return_code = return_state.get("returnCode", "")
@@ -405,11 +396,10 @@ def unwrap_response(response_json: dict, aes_key: Optional[bytes] = None) -> dic
     
     # Check for API-level errors
     if return_code == "99" or (return_msg and return_msg != "SUCCESS"):
-        raise ApiException(
+        raise APIException(
             message=return_msg or "Unknown API error",
-            error_code=return_code or "99",
-            status_code=400,
-            details={"returnStateInfo": return_state}
+            error_type=return_code or "99",
+            status_code=400
         )
     
     data_section = response_json.get("data", {})
@@ -437,7 +427,12 @@ def unwrap_response(response_json: dict, aes_key: Optional[bytes] = None) -> dic
         else:
             # Plain text: just Base64 decode
             decoded_bytes = base64.b64decode(content_b64)
+            if zip_code == "1":
+                logger.debug("Decompressing GZIP response (codeType=0)")
+                decoded_bytes = gzip.decompress(decoded_bytes)
+
             content_str = decoded_bytes.decode('utf-8')
+            
             logger.debug(f"Decoded content length: {len(content_str)} chars")
         
         # Parse JSON and inject into response

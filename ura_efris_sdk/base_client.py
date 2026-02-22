@@ -12,7 +12,7 @@ from .utils import (
     build_unencrypted_request,
     unwrap_response
 )
-from .exceptions import ApiException, EncryptionException
+from .exceptions import EncryptionException, APIException
 from .key_client import KeyClient
 
 
@@ -27,45 +27,103 @@ class BaseClient:
         - Endpoint URL resolution
     """
     
-    # Interface code mapping (API endpoint identifiers)
+    # =====================================================================
+    # COMPLETE INTERFACE CODE MAPPING (All endpoints from EFRIS v23.0)
+    # =====================================================================
     INTERFACES = {
-        "test_interface": "T101",
+        # === SYSTEM / AUTHENTICATION ===
+        "get_server_time": "T101",
         "client_init": "T102",
         "sign_in": "T103",
         "get_symmetric_key": "T104",
         "forget_password": "T105",
-        "system_dictionary": "T115",
-        "query_taxpayer": "T119",
-        "get_branches": "T138",
-        "check_taxpayer_type": "T137",
-        "query_commodity_category": "T123",
-        "query_commodity_category_page": "T124",
-        "query_excise_duty": "T125",
-        "get_exchange_rates": "T126",
-        "get_exchange_rate": "T121",
-        "goods_upload": "T130",
-        "goods_inquiry": "T127",
-        "query_stock": "T128",
-        "stock_maintain": "T131",
-        "stock_transfer": "T139",
-        "query_goods_by_code": "T144",
+        
+        # === INVOICE MANAGEMENT ===
         "invoice_query_all": "T106",
-        "invoice_query": "T107",
+        "invoice_query_normal": "T107",
         "invoice_details": "T108",
         "billing_upload": "T109",
         "batch_invoice_upload": "T129",
+        
+        # === CREDIT / DEBIT NOTES ===
         "credit_application": "T110",
-        "credit_note_status": "T111",
+        "credit_note_query": "T111",
+        "credit_note_details": "T112",
+        "credit_note_approval": "T113",
         "credit_note_cancel": "T114",
         "query_credit_application": "T118",
-        "credit_application_detail": "T112",
-        "credit_note_approval": "T113",
         "void_application": "T120",
         "query_invalid_credit": "T122",
         "invoice_checks": "T117",
-        "exception_log_upload": "T132",
+        
+        # === TAXPAYER / BRANCH ===
+        "query_taxpayer": "T119",
+        "get_branches": "T138",
+        "check_taxpayer_type": "T137",
+        "query_principal_agent": "T180",
+        
+        # === COMMODITY / EXCISE / DICTIONARY ===
+        "system_dictionary": "T115",
+        "query_commodity_category": "T123",
+        "query_commodity_category_page": "T124",
+        "query_excise_duty": "T125",
         "commodity_incremental": "T134",
+        "query_commodity_by_date": "T146",
+        "query_hs_codes": "T185",
+        
+        # === EXCHANGE RATES ===
+        "get_exchange_rates": "T126",
+        "get_exchange_rate": "T121",
+        
+        # === GOODS / SERVICES ===
+        "goods_upload": "T130",
+        "goods_inquiry": "T127",
+        "query_stock": "T128",
+        "query_goods_by_code": "T144",
+        
+        # === STOCK MANAGEMENT ===
+        "stock_maintain": "T131",
+        "stock_transfer": "T139",
+        "stock_records_query": "T145",
+        "stock_records_query_alt": "T147",
+        "stock_records_detail": "T148",
+        "stock_adjust_records": "T149",
+        "stock_adjust_detail": "T160",
+        "stock_transfer_records": "T183",
+        "stock_transfer_detail": "T184",
+        "negative_stock_config": "T177",
+        
+        # === EDC / FUEL SPECIFIC ===
+        "query_fuel_type": "T162",
+        "upload_shift_info": "T163",
+        "upload_edc_disconnect": "T164",
+        "update_buyer_details": "T166",
+        "edc_invoice_query": "T167",
+        "query_fuel_pump_version": "T168",
+        "query_pump_nozzle_tank": "T169",
+        "query_edc_location": "T170",
+        "query_edc_uom_rate": "T171",
+        "upload_nozzle_status": "T172",
+        "query_edc_device_version": "T173",
+        
+        # === AGENT / USSD ===
+        "ussd_account_create": "T175",
+        "upload_device_status": "T176",
+        "efd_transfer": "T178",
+        "query_agent_relation": "T179",
+        "upload_frequent_contacts": "T181",
+        "get_frequent_contacts": "T182",
+        
+        # === EXPORT / CUSTOMS ===
+        "invoice_remain_details": "T186",
+        "query_fdn_status": "T187",
+        
+        # === SYSTEM UTILITIES ===
         "z_report_upload": "T116",
+        "exception_log_upload": "T132",
+        "tcs_upgrade_download": "T133",
+        "get_tcs_latest_version": "T135",
+        "certificate_upload": "T136",
     }
     
     def __init__(self, config: Dict[str, Any], key_client: "KeyClient"):
@@ -108,12 +166,12 @@ class BaseClient:
             dict: API response dictionary
         
         Raises:
-            ApiException: If interface not configured or HTTP error
+            APIException: If interface not configured or HTTP error
             EncryptionException: If encryption/decryption fails
         """
         # Validate interface code
         if interface_key not in self.INTERFACES:
-            raise ApiException(
+            raise APIException(
                 f"Interface [{interface_key}] not configured",
                 status_code=400
             )
@@ -128,9 +186,7 @@ class BaseClient:
                 raise EncryptionException("AES symmetric key not available")
         
         # Load private key for signing (if encrypting)
-        private_key = None
-        if encrypt:
-            private_key = self.key_client._load_private_key()
+        private_key = self.key_client._load_private_key()
         
         # Build request envelope
         if encrypt and aes_key and private_key:
@@ -151,6 +207,7 @@ class BaseClient:
                 tin=self.config["tin"],
                 device_no=self.config["device_no"],
                 brn=self.config.get("brn", ""),
+                private_key=private_key,
                 taxpayer_id=self.key_client.taxpayer_id
             )
         
@@ -169,7 +226,7 @@ class BaseClient:
         
         # Handle HTTP errors
         if response.status_code != 200:
-            raise ApiException(
+            raise APIException(
                 f"HTTP {response.status_code}: {response.text}",
                 status_code=response.status_code
             )
@@ -178,7 +235,7 @@ class BaseClient:
         try:
             resp_json = response.json()
         except json.JSONDecodeError as e:
-            raise ApiException(f"Invalid JSON response: {e}", status_code=500)
+            raise APIException(f"Invalid JSON response: {e}", status_code=500)
         
         # Debug: Log response before unwrapping
         self.logger.debug(f"Response returnCode: {resp_json.get('returnStateInfo', {}).get('returnCode')}")
